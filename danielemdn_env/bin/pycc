@@ -1,0 +1,3 @@
+#!/home/danieledinosse/MLforTS/danielemdn_env/bin/python
+from numba.pycc import main
+main()
