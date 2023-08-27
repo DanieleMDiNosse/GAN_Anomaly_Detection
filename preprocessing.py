@@ -10,6 +10,7 @@ import logging
 import numba as nb
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 def rename_files(folder_path):
     old_names = os.listdir(folder_path)
@@ -155,6 +156,10 @@ if __name__ == "__main__":
     window_size = 500
     data = dataframes[0].values
     input_data = np.array(divide_into_windows(data, window_size))
+
+    # Normalize all the features with StandardScaler
+    scaler = StandardScaler()
+    input_data = scaler.fit_transform(input_data.reshape(-1, input_data.shape[-1])).reshape(input_data.shape)
     
     # Divide the data into train, validation and test set
     train, test = train_test_split(input_data, test_size=0.2, shuffle=False)

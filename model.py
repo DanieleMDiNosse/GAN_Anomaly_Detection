@@ -96,14 +96,15 @@ if __name__ == '__main__':
 
     N = args.N_days
     
-    # Read the message dataframes
+    # Read the orderbook dataframes
     dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
     dataframes_paths = [path for path in dataframes_paths if 'orderbook' in path]
     dataframes_paths.sort()
     dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths][:N]
 
 
-    # Divide the dataframes into windows
+    # Divide the dataframes into windows. This will be done for each day (each dataframe in dataframes).
+    # For now I will focus just on the first day as a proof of concept.
     window_size = 500
     data = dataframes[0].values
     input_data = np.array(divide_into_windows(data, window_size))
@@ -113,10 +114,22 @@ if __name__ == '__main__':
     train, val = train_test_split(train, test_size=0.2, shuffle=False)
 
 
-    # Define the parameters of the GAN
+    # Define the parameters of the GAN.
+    # Remember that the number of samples for each batch is equal to the number of windows in the dataset divided by the number of batches.
     latent_dim = 100
-    n_epochs = 100
+    n_epochs = 1
     n_batches = 256
+
+    # Train the GAN. The input shape for the generator is equal to the shape of dimension
+    # of the latent space, while the output shape is equal to the shape of the windows.
+    # Conversely, the input shape for the discriminator is equal to the shape of the windows,
+    # while the output shape is equal to 1 (since the discriminator is a binary classifier).
+    generator = build_generator((latent_dim, 1), (window_size, 10), 100)
+    discriminator = build_discriminator((window_size, 10), 100)
+    gan = build_gan(generator, discriminator)
+    train_GAN(generator, discriminator, gan, train, latent_dim, n_epochs, n_batches)
+    
+
 
 
 
