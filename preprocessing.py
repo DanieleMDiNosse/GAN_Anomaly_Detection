@@ -27,9 +27,10 @@ def rename_columns(stock, date):
     dataframes_paths.sort()
     dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths]
     for data, path in zip(dataframes, dataframes_paths):
-        print(path)
         # Rename the columns
         if 'message' in path:
+            # if len(data.columns) > 6: eliminate the last column
+            if len(data.columns) > 6: data = data.drop(columns = data.columns[-1])
             data.columns = ['Time', 'Event type', 'Order ID', 'Size', 'Price', 'Direction']
         elif 'orderbook' in path:
             n = data.shape[1]
@@ -52,6 +53,33 @@ def divide_into_windows(data, window_size):
         windows.append(data[i:i+window_size, :])
     return windows
 
+@nb.jit(nopython=True)
+def divide_data_condition_input(data, condition_size):
+    '''Divide the data into condition and input data. The condition data is the data that
+    is used to condition the GAN
+    
+    Parameters
+    ----------
+    data : numpy array
+        Array containing the data (like training data for instance).
+    condition_size : int
+        Length of the condition.
+    
+    Returns
+    -------
+    condition : numpy array
+        Array containing the condition data.
+    input_data : numpy array
+        Array containing the input data.'''
+    
+    condition = []
+    input_data = []
+    for window in data:
+        condition.append(window[:condition_size, :])
+        input_data.append(window[condition_size:, :])
+
+    return condition, input_data
+
 def sliding_windows_stat(data):
     '''This function computes the statistics of the time intervals between two consecutive
     windows. It returns a dataframe containing the mean and the standard deviation of the
@@ -65,10 +93,9 @@ def sliding_windows_stat(data):
     
     Returns
     -------
-    window_sizes : list
-        List containing the window sizes.
-    minutes_statistics : pandas dataframe
-        Dataframe containing the mean and the standard deviation of the time intervals for each window size.'''
+    timedeltas : list
+        List of the time intervals (real time) for each window size across all the dataset.
+    '''
 
     times = data['Time'].values
     #times = times / 1e9 # Convert to seconds
@@ -76,17 +103,10 @@ def sliding_windows_stat(data):
     window_size = [step*i for i in range(1, 21)]
     timedeltas = []
 
-    for i in tqdm(range(len(window_size))):
+    for i in range(len(window_size)):
         # Use the numba implementation for speedup
-        timedeltas.append(sliding_windows_stat_numba(times, window_size, i))
-        # Compute the mean and the standard deviation of the time intervals
-        # timedelta_mean = np.mean(timedeltas)
-        # total_minutes_mean[i] = timedelta_mean
-        # total_minutes_bounds[0,i] = min(timedeltas)
-        # total_minutes_bounds[1,i] = max(timedeltas)
-    
-    # minutes_statistics = pd.DataFrame({'window_size': window_size, 'mean': total_minutes_mean, 'min': total_minutes_bounds[0], 'max': total_minutes_bounds[1]})
-    # minutes_statistics.to_pickle(f'../data/minutes_statistics_{os.getpid()}.pkl')
+        timedeltas.append(sliding_windows_stat_numba(times, nb.typed.List(window_size), i))
+
     return timedeltas
 
 @nb.jit(nopython=True)
@@ -134,23 +154,37 @@ if __name__ == "__main__":
     step = 100
     window_size = [step*i for i in range(1, 21)]
 
-    if args.rename:
-        pass
+    # Check if all the first columns names of the dataframes are equal to 'Time'.
+    # If not, rename them via the rename_columns function.
+    for path, data in zip(dataframes_paths, dataframes):
+        if 'message' in path:
+            if data.columns[0] != 'Time':
+                logging.info('Renaming the columns of the dataframes...')
+                rename_columns(stock, date)
+        elif 'orderbook' in path:
+            if data.columns[0] != 'Ask price 1':
+                logging.info('Renaming the columns of the dataframes...')
+                rename_columns(stock, date)
+
 
     if args.box_plot_sw:
         '''The window size of the sliding window is a hyperparameter that needs to be tuned. Here I plot the boxplots
          of the time intervals for each window size length.'''
-
-        for data in tqdm(dataframes):
-            window_size, timedeltas = sliding_windows_stat(data)
-            # Concatenate the dataframe that sliding_windows_stats returns with the previous one
-            plt.figure(figsize=(10, 5), tight_layout=True)
-            plt.boxplot(timedeltas)
-            # window_size.insert(0, 0)
-            plt.xticks(np.arange(1, len(window_size)+1), window_size, rotation=45)
-            plt.xlabel('Window size')
-            plt.ylabel('Time interval (minutes)')
+        i = 0
+        for data in tqdm(dataframes, desc='BoxPlots of delta_t for each day'):
+            i += 1
+            if list(data.columns) == ['Time', 'Event type', 'Order ID', 'Size', 'Price', 'Direction']:
+                timedeltas = sliding_windows_stat(data)
+                # print(timedeltas)
+                plt.figure(figsize=(10, 5), tight_layout=True)
+                plt.boxplot(timedeltas)
+                plt.xticks(np.arange(1, len(window_size)+1), window_size, rotation=45)
+                plt.xlabel('Window size')
+                plt.ylabel('Time interval (minutes)')
+            plt.title(f'Time intervals for each window size - {stock}')
+            plt.savefig(f'plots/time_intervals_{stock}_{i}.png')
         plt.show()
+        exit()
 
     # For now consider just one window size and one day
     window_size = 500
@@ -160,7 +194,9 @@ if __name__ == "__main__":
     # Normalize all the features with StandardScaler
     scaler = StandardScaler()
     input_data = scaler.fit_transform(input_data.reshape(-1, input_data.shape[-1])).reshape(input_data.shape)
-    
+    # compute the inverse tranformation of one sample
+    # inv_data = scaler.inverse_transform(input_data[0].reshape(-1, input_data.shape[-1])).reshape(input_data.shape[-1])
+    # inv_data = scaler.inverse_transform(input_data.reshape(-1, input_data.shape[-1])).reshape(input_data.shape)
     # Divide the data into train, validation and test set
     train, test = train_test_split(input_data, test_size=0.2, shuffle=False)
     train, val = train_test_split(train, test_size=0.2, shuffle=False)
