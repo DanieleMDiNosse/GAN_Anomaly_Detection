@@ -13,55 +13,136 @@ import os
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
-from tensorflow.keras.layers import Input, LSTM, Dense, Concatenate, Reshape, TimeDistributed
+from tensorflow.keras.layers import Input, LSTM, Dense, Concatenate, Reshape, TimeDistributed, Dropout
 from tensorflow.keras.models import Model
 from tensorflow.keras.losses import binary_crossentropy
 
 
-def build_generator(T_cond, latent_dim, K, T_real, num_features):
+def build_generator(T_cond, latent_dim, gen_units, T_real, num_features):
+    '''Build the generator model. The generator takes as input the condition and the noise and outputs a sample.
+    The condition is processed by a LSTM layer and the noise is processed by a LSTM layer. Then the two outputs are concatenated
+    and processed by a dense layer. The output of the dense layer is reshaped to have the same shape of the real samples.
+    The generator is trained to fool the discriminator.
+    
+    Parameters
+    ----------
+    T_cond : int
+        Length of the condition.
+    latent_dim : int
+        Dimension of the noise.
+    gen_units : list
+        List of the number of hidden units for the LSTM layers.
+    T_real : int
+        Length of the real samples.
+    num_features : int
+        Number of features of the real samples.
+    
+    Returns
+    -------
+    generator_model : tensorflow.keras.Model
+        The generator model.
+    condition_model : tensorflow.keras.Model
+        The condition model.
+    '''
     # ----------------- CONDITIONER -----------------
+    K, hidden_units0 = gen_units[0], gen_units[1]
     condition_input = Input(shape=(T_cond, num_features))
-    condition_lstm = LSTM(95, return_sequences=True)(condition_input)
-    dense_layer = Dense(K)
-    condition_output = TimeDistributed(dense_layer)(condition_lstm)
-    condition_model = Model(condition_input, condition_output)
+    lstm = LSTM(hidden_units0, return_sequences=True)(condition_input)
+    dense_layer = Dense(K, activation='relu')
+    output = TimeDistributed(dense_layer)(lstm)
+    condition_model = Model(condition_input, output)
     condition_model.compile(optimizer='adam', loss='mean_squared_error')
     plot_model(condition_model, to_file=f'plots/condition_model_plot_{os.getpid()}.png', show_shapes=True, show_layer_names=True)
 
     # ----------------- GENERATOR -----------------
-    generator_condition_input = Input(shape=(T_cond, K,))
-    generator_noise_input = Input(shape=(T_cond, latent_dim,))
-    generator_input = Concatenate()([generator_condition_input, generator_noise_input])
-    generator_lstm = LSTM(10)(generator_input)
-    generator_dense = Dense(num_features*T_real)(generator_lstm)
-    generator_reshape = Reshape((T_real, num_features))(generator_dense)
-    generator_model = Model([generator_condition_input, generator_noise_input], generator_reshape)
+    hidden_units1 = gen_units[2]
+    condition_input = Input(shape=(T_cond, K,))
+    noise_input = Input(shape=(T_cond, latent_dim,))
+    input = Concatenate()([condition_input, noise_input])
+    lstm = LSTM(hidden_units1, return_sequences=True)(input)
+    lstm = LSTM(hidden_units1)(lstm)
+    dense = Dense(num_features*T_real, activation='relu')(lstm)
+    dropout = Dropout(0.2)(dense)
+    reshape = Reshape((T_real, num_features))(dropout)
+    generator_model = Model([condition_input, noise_input], reshape)
 
     generator_model.compile(optimizer='adam', loss='mean_squared_error')
     plot_model(generator_model, to_file=f'plots/generator_model_plot_{os.getpid()}.png', show_shapes=True, show_layer_names=True)
     return generator_model, condition_model
 
-def build_discriminator(T_real, T_cond, num_features, K):
-    # Conditioner input
-    discriminator_condition_input = Input(shape=(T_cond, K,))
-    discriminator_lstm = LSTM(95)(discriminator_condition_input)
-    dense_layer = Dense(T_real*num_features)(discriminator_lstm)
-    discriminator_reshape = Reshape((T_real, num_features))(dense_layer)
+def build_discriminator(T_real, T_cond, num_features, disc_units):
+    '''Build the discriminator model. The discriminator takes as input the condition and the sample and outputs a probability.
+    The condition is taken as the output of the condition model and then it is processed in order to match the real sample dimensions.
+    Together with the real sample, the condition (reshaped) is concatenated and processed by a LSTM layer. The output of the LSTM layer
+    is processed by a dense layer and then by a sigmoid layer. The discriminator is trained to distinguish real samples from fake samples.
+    
+    Parameters
+    ----------
+    T_real : int
+        Length of the real samples.
+    T_cond : int
+        Length of the condition.
+    num_features : int
+        Number of features of the real samples.
+    disc_units : list
+        List of the number of hidden units for the LSTM layers.
+    
+    Returns
+    -------
+    discriminator_model : tensorflow.keras.Model
+        The discriminator model.'''
 
-    discriminator_input = Input(shape=(T_real, num_features))
-    discriminator_concat = Concatenate()([discriminator_reshape, discriminator_input])
+    # Input for the condition
+    K, hidden_units0 = disc_units[0], disc_units[1]
+    condition_input = Input(shape=(T_cond, K,))
+    lstm = LSTM(hidden_units0)(condition_input)
+    dense_layer = Dense(T_real*num_features, activation='leaky_relu')(lstm)
+    reshape = Reshape((T_real, num_features))(dense_layer)
 
-    discriminator_lstm = LSTM(10)(discriminator_concat)
-    discriminator_output = Dense(1, activation='sigmoid')(discriminator_lstm)
+    # Input for the real samples
+    hidden_units1 = disc_units[1]
+    input = Input(shape=(T_real, num_features))
+    concat = Concatenate()([reshape, input])
 
-    discriminator_model = Model([discriminator_condition_input, discriminator_input], discriminator_output)
+    lstm = LSTM(hidden_units1)(concat)
+    output = Dense(1, activation='sigmoid')(lstm)
+
+    discriminator_model = Model([condition_input, input], output)
     discriminator_model.compile(loss='binary_crossentropy', optimizer='adam')
     # plot the models
     plot_model(discriminator_model, to_file=f'plots/discriminator_model_plot_{os.getpid()}.png', show_shapes=True, show_layer_names=True)
 
     return discriminator_model
 
-def train_step(real_samples, conditions, condition_model, generator_model, discriminator_model, T_cond, latent_dim, i):
+def train_step(real_samples, conditions, condition_model, generator_model, discriminator_model, optimizer, T_cond, latent_dim, i, metrics):
+    '''Train the GAN for one batch.
+    
+    Parameters
+    ----------
+    real_samples : numpy.ndarray
+        The real samples.
+    conditions : numpy.ndarray
+        The conditions.
+    condition_model : tensorflow.keras.Model
+        The condition model.
+    generator_model : tensorflow.keras.Model
+        The generator model.
+    discriminator_model : tensorflow.keras.Model
+        The discriminator model.
+    T_cond : int
+        Length of the condition.
+    latent_dim : int
+        Dimension of the noise.
+    i : int
+        Batch number.
+    metrics : dict
+        Dictionary to store the metrics.
+    
+    Returns
+    -------
+    None'''
+    discriminator_optimizer, generator_optimizer, conditioner_optimizer = optimizer
+
     # Initialize random noise
     noise = tf.random.normal([batch_conditions.shape[0], T_cond, latent_dim])
 
@@ -112,21 +193,67 @@ def train_step(real_samples, conditions, condition_model, generator_model, discr
     # Delete the tape to free resources
     del tape
 
-    if i % 10 == 0:
-        summarize_performance(real_output, fake_output, disc_loss, gen_loss, generated_samples)
+    if i % 3 == 0:
+        summarize_performance(real_output, fake_output, disc_loss, gen_loss, generated_samples, metrics)
 
     return None
 
 def compute_discriminator_loss(real_output, fake_output):
+    '''Compute the discriminator loss.
+    
+    Parameters
+    ----------
+    real_output : numpy.ndarray
+        The output of the discriminator for the real samples.
+    fake_output : numpy.ndarray
+        The output of the discriminator for the fake samples.
+    
+    Returns
+    -------
+    total_disc_loss : float
+        The discriminator loss.'''
+
     real_loss = binary_crossentropy(tf.ones_like(real_output), real_output)
     fake_loss = binary_crossentropy(tf.zeros_like(fake_output), fake_output)
     total_disc_loss = real_loss + fake_loss
     return tf.reduce_mean(total_disc_loss)
 
 def compute_generator_loss(fake_output):
+    '''Compute the generator loss.
+    
+    Parameters
+    ----------
+    fake_output : numpy.ndarray
+        The output of the discriminator for the fake samples.
+    
+    Returns
+    -------
+    float
+        The generator loss.'''
     return tf.reduce_mean(binary_crossentropy(tf.ones_like(fake_output), fake_output))
 
-def summarize_performance(real_output, fake_output, disc_loss, gen_loss, generated_samples):
+def summarize_performance(real_output, fake_output, disc_loss, gen_loss, generated_samples, metrics):
+    '''Summarize the performance of the GAN.
+    
+    Parameters
+    ----------
+    real_output : numpy.ndarray
+        The output of the discriminator for the real samples.
+    fake_output : numpy.ndarray
+        The output of the discriminator for the fake samples.
+    disc_loss : float
+        The discriminator loss.
+    gen_loss : float
+        The generator loss.
+    generated_samples : numpy.ndarray
+        The generated samples.
+    metrics : dict
+        Dictionary to store the metrics.
+    
+    Returns
+    -------
+    None'''
+
     # Calculate Discriminator Accuracy on Real Samples
     real_labels = np.ones((real_output.shape[0], 1))  # Real samples have label 1
     real_accuracy = accuracy_score(real_labels, np.round(real_output.numpy()))
@@ -135,17 +262,23 @@ def summarize_performance(real_output, fake_output, disc_loss, gen_loss, generat
     fake_labels = np.zeros((fake_output.shape[0], 1))  # Fake samples have label 0
     fake_accuracy = accuracy_score(fake_labels, np.round(fake_output.numpy()))
 
+    # add the metrics to the dictionary
+    metrics['disc_loss'].append(disc_loss.numpy())
+    metrics['gen_loss'].append(gen_loss.numpy())
+    metrics['real_acc'].append(real_accuracy)
+    metrics['fake_acc'].append(fake_accuracy)
+
     plt.figure(figsize=(10, 5), tight_layout=True)
-    plt.plot(disc_loss, label='Discriminator loss')
-    plt.plot(gen_loss, label='Generator loss')
+    plt.plot(metrics['disc_loss'], label='Discriminator loss')
+    plt.plot(metrics['gen_loss'], label='Generator loss')
     plt.xlabel('Batch x 10')
     plt.ylabel('Loss')
     plt.legend()
-    plt.savefig(f'plots/losses_epoch_{os.getpid()}.png')
+    plt.savefig(f'plots/losses_{os.getpid()}.png')
 
     plt.figure(figsize=(10, 5), tight_layout=True)
-    plt.plot(real_accuracy, label='Accuracy real')
-    plt.plot(fake_accuracy, label='Accuracy fake')
+    plt.plot(metrics['real_acc'], label='Accuracy real')
+    plt.plot(metrics['fake_acc'], label='Accuracy fake')
     plt.xlabel('Batch x 10')
     plt.ylabel('Accuracy')
     plt.legend()
@@ -162,81 +295,6 @@ def summarize_performance(real_output, fake_output, disc_loss, gen_loss, generat
 
     print(f'Batch: {i} | Disc loss: {disc_loss:.5f} | Gen loss: {gen_loss:.5f} | Real acc: {real_accuracy:.5f} | Fake acc: {fake_accuracy:.5f}')
     return None
-
-'''def train_GAN(generator, discriminator, conditioner, gan,  dataset, latent_dim, n_epochs, window_size, batch_size, scaler):
-    # # How many windows I use for each epoch.
-    # dataset.shape[0] is the number of windows in the dataset (e.g. in the train set).
-    batch_per_epoch = int(dataset.shape[0] / batch_size)
-    d_loss_real = []
-    d_loss_fake = []
-    g_loss = []
-    c_loss = []
-    acc_real = []
-    acc_fake = []
-    for i in tqdm(range(n_epochs), desc='Epochs'):
-        for j in range(batch_per_epoch):
-            # Prepare the points in the latent space as input for the generator
-            z = random_inputs(batch_size, window_size, latent_dim)
-            # Prepare the output of the conditioner as an additional input for the generator
-            #cl = co
-            # print('Dimension of the random sample: ', z.shape)
-            # Generate fake samples
-            X_fake = generator.predict(z)
-            # print('Dimension of the fake sample: ', X_fake.shape)
-            # Select a batch of random real samples
-            idx = np.random.randint(0, dataset.shape[0], batch_size)
-            # Retrieve real images
-            X_real = dataset[idx]
-            # print('Dimension of the real sample: ', X_real.shape)
-            # Create the labels for the discriminator
-            y_real = np.ones((batch_size, 1))
-            y_fake = np.zeros((batch_size, 1))
-            # Train the discriminator
-            dlr, _ = discriminator.train_on_batch(X_real, y_real)
-            dlf, _ = discriminator.train_on_batch(X_fake, y_fake)
-            d_loss_real.append(dlr)
-            d_loss_fake.append(dlf)
-            # Plot d_loss_real and d_loss_fake on the first axis of the figure
-            fig, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
-            axes[0].plot(d_loss_real, label='d_loss_real', alpha=0.5)
-            axes[0].plot(d_loss_fake, label='d_loss_fake', alpha=0.5)
-            axes[0].plot(np.add(d_loss_real, d_loss_fake)*0.5, label='d_loss')
-            axes[0].set_title('Discriminator loss')
-            axes[0].set_xlabel('Batch')
-            axes[0].set_ylabel('Loss')
-            # Prepare the points in the latent space as input for the generator
-            z = random_inputs(batch_size, window_size, latent_dim)
-            # Create inverted labels for the fake samples
-            y_gan = np.ones((batch_size, 1))
-            # Update the generator via the discriminator's error
-            gl = gan.train_on_batch(z, y_gan)
-            g_loss.append(gl)
-            # Plot the g_loss on the second axis of the figure
-            axes[1].plot(g_loss, label='g_loss')
-            axes[1].set_title('Generator loss')
-            axes[1].set_xlabel('Batch')
-            axes[1].set_ylabel('Loss')
-            axes[0].legend()
-            axes[1].legend()
-            plt.savefig(f'plots/losses_epoch_{i}_{os.getpid()}.png')
-            plt.close()
-            # summarize loss on this batch
-            print(f'Batch: {j/batch_per_epoch*100:.2f}%, d_loss (fake, real): {dlf:.5f}, {dlr:.5f}, gan_loss: {gl:.5f}')
-            if j % 10 == 0:
-                ar, af = summarize_performance(i, generator, discriminator, dataset, latent_dim, scaler, n_samples=100)
-                acc_real.append(ar)
-                acc_fake.append(af)
-                # Plot the accurancy of the discriminator on the real and fake samples
-                plt.figure(figsize=(10, 5), tight_layout=True)
-                plt.plot(acc_real, label='Accuracy real')
-                plt.plot(acc_fake, label='Accuracy fake')
-                plt.title('Accuracy of the discriminator')
-                plt.xlabel('Batch')
-                plt.ylabel('Accuracy')
-                plt.legend()
-                plt.savefig(f'plots/accuracy_epoch_{i}_{os.getpid()}.png')
-                plt.close()
-    return None'''
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -317,49 +375,27 @@ if __name__ == '__main__':
     latent_dim = 100
     n_epochs = 1
     T_condition = condition_train.shape[1]
-    K = 5
     T_real = input_train.shape[1]
     num_features = input_train.shape[2]
     n_units_generator = 100
     batch_size = 32
+    gen_units = [5, 64, 64]
+    disc_units = [gen_units[0], 64, 64]
 
     # Create a TensorFlow Dataset object
     dataset = tf.data.Dataset.from_tensor_slices((input_train, condition_train)).batch(batch_size)
     
-    conditioner_optimizer = tf.keras.optimizers.Adam(1e-4)
-    generator_optimizer = tf.keras.optimizers.Adam(1e-4)
-    discriminator_optimizer = tf.keras.optimizers.Adam(1e-4)
+    conditioner_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0002, beta_1=0.5)
+    generator_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0002, beta_1=0.5)
+    discriminator_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0002, beta_1=0.5)
+    optimizer = [conditioner_optimizer, generator_optimizer, discriminator_optimizer]
 
-    generator_model, condition_model = build_generator(T_condition, latent_dim, K, T_real, num_features)
-    discriminator_model = build_discriminator(T_real, T_condition, num_features, K)
+    generator_model, condition_model = build_generator(T_condition, latent_dim, gen_units, T_real, num_features)
+    discriminator_model = build_discriminator(T_real, T_condition, num_features, disc_units)
+    # Define a dictionary to store the metrics
+    metrics = {'disc_loss': [], 'gen_loss': [], 'real_acc': [], 'fake_acc': []}
     for epoch in range(n_epochs):
         i = 0
         for batch_real_samples, batch_conditions in tqdm(dataset, desc=f'Epoch {epoch+1}/{n_epochs}'):
             i += 1
-            train_step(batch_real_samples, batch_conditions, condition_model, generator_model, discriminator_model, T_condition, latent_dim, i)
-
-
-    # # Build the models
-    # logging.info('\n---------- BUILDING THE MODELS ----------')
-    # # generator = build_generator(input_shape_conditioner, num_features_output_cond, input_shape_unconditional, num_features, n_units_generator)
-    # # logging.info('\nGenerator summary:')
-    # # generator.summary()
-    # # plot_model(generator, to_file='plots/generator_plot.png', show_shapes=True, show_layer_names=True)
-    # # exit()
-    # discriminator = build_discriminator((window_size, num_features), n_units_discriminator)
-    # logging.info('\nDiscriminator summary:')
-    # plot_model(discriminator, to_file='plots/discriminator_plot.png', show_shapes=True, show_layer_names=True)
-    # discriminator.summary()
-    # exit()
-    # gan = build_gan(generator, discriminator)
-    # logging.info('\nGAN summary:')
-    # gan.summary()
-    # plot_model(gan, to_file='plots/gan_plot.png', show_shapes=True, show_layer_names=True)
-    # logigng.info('\n---------- CGAN TRAINING ----------')
-    # train_GAN(generator, discriminator, gan, train, latent_dim, n_epochs, window_size, batch_size, scaler)
-    
-
-
-
-
-
+            train_step(batch_real_samples, batch_conditions, condition_model, generator_model, discriminator_model, optimizer, T_condition, latent_dim, i, metrics)
