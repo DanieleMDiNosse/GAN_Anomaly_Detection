@@ -197,8 +197,11 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
     # Delete the tape to free resources
     del tape
 
-    if i % 3 == 0:
+    if i % 20 == 0:
         summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, metrics)
+        condition_model.save('/models/condition_model.h5')
+        generator_model.save('/models/generator_model.h5')
+        critic_model.save('/models/critic_model.h5')
 
     return None
 
