@@ -16,13 +16,14 @@ from sklearn.metrics import accuracy_score
 from tensorflow.keras.layers import Input, LSTM, Dense, Concatenate, Reshape, TimeDistributed, Dropout
 from tensorflow.keras.models import Model
 from tensorflow.keras.losses import binary_crossentropy
+from tensorflow.keras import backend
 
 
 def build_generator(T_cond, latent_dim, gen_units, T_real, num_features):
     '''Build the generator model. The generator takes as input the condition and the noise and outputs a sample.
     The condition is processed by a LSTM layer and the noise is processed by a LSTM layer. Then the two outputs are concatenated
     and processed by a dense layer. The output of the dense layer is reshaped to have the same shape of the real samples.
-    The generator is trained to fool the discriminator.
+    The generator is trained to fool the critic.
     
     Parameters
     ----------
@@ -61,7 +62,7 @@ def build_generator(T_cond, latent_dim, gen_units, T_real, num_features):
     input = Concatenate()([condition_input, noise_input])
     lstm = LSTM(hidden_units1, return_sequences=True)(input)
     lstm = LSTM(hidden_units1)(lstm)
-    dense = Dense(num_features*T_real, activation='relu')(lstm)
+    dense = Dense(num_features*T_real, activation='linear')(lstm)
     dropout = Dropout(0.2)(dense)
     reshape = Reshape((T_real, num_features))(dropout)
     generator_model = Model([condition_input, noise_input], reshape)
@@ -70,11 +71,12 @@ def build_generator(T_cond, latent_dim, gen_units, T_real, num_features):
     plot_model(generator_model, to_file=f'plots/generator_model_plot_{os.getpid()}.png', show_shapes=True, show_layer_names=True)
     return generator_model, condition_model
 
-def build_discriminator(T_real, T_cond, num_features, disc_units):
-    '''Build the discriminator model. The discriminator takes as input the condition and the sample and outputs a probability.
+def build_critic(T_real, T_cond, num_features, disc_units):
+    '''Build the critic model. The critic takes as input the condition and the sample and outputs a real value.
+    In a WGAN the discriminator does not classify samples, but it rather outputs a real value evaluating their realism, thus we refer to it as a Critic.
     The condition is taken as the output of the condition model and then it is processed in order to match the real sample dimensions.
     Together with the real sample, the condition (reshaped) is concatenated and processed by a LSTM layer. The output of the LSTM layer
-    is processed by a dense layer and then by a sigmoid layer. The discriminator is trained to distinguish real samples from fake samples.
+    is processed by a dense layer and then by a sigmoid layer. The critic is trained to distinguish real samples from fake samples.
     
     Parameters
     ----------
@@ -89,8 +91,8 @@ def build_discriminator(T_real, T_cond, num_features, disc_units):
     
     Returns
     -------
-    discriminator_model : tensorflow.keras.Model
-        The discriminator model.'''
+    critic_model : tensorflow.keras.Model
+        The critic model.'''
 
     # Input for the condition
     K, hidden_units0 = disc_units[0], disc_units[1]
@@ -105,16 +107,16 @@ def build_discriminator(T_real, T_cond, num_features, disc_units):
     concat = Concatenate()([reshape, input])
 
     lstm = LSTM(hidden_units1)(concat)
-    output = Dense(1, activation='sigmoid')(lstm)
+    output = Dense(1, activation='linear')(lstm)
 
-    discriminator_model = Model([condition_input, input], output)
-    discriminator_model.compile(loss='binary_crossentropy', optimizer='adam')
+    critic_model = Model([condition_input, input], output)
+    critic_model.compile(loss='binary_crossentropy', optimizer='adam')
     # plot the models
-    plot_model(discriminator_model, to_file=f'plots/discriminator_model_plot_{os.getpid()}.png', show_shapes=True, show_layer_names=True)
+    plot_model(critic_model, to_file=f'plots/critic_model_plot_{os.getpid()}.png', show_shapes=True, show_layer_names=True)
 
-    return discriminator_model
+    return critic_model
 
-def train_step(real_samples, conditions, condition_model, generator_model, discriminator_model, optimizer, T_cond, latent_dim, i, metrics):
+def train_step(real_samples, conditions, condition_model, generator_model, critic_model, optimizer, T_cond, latent_dim, i, metrics):
     '''Train the GAN for one batch.
     
     Parameters
@@ -127,8 +129,8 @@ def train_step(real_samples, conditions, condition_model, generator_model, discr
         The condition model.
     generator_model : tensorflow.keras.Model
         The generator model.
-    discriminator_model : tensorflow.keras.Model
-        The discriminator model.
+    critic_model : tensorflow.keras.Model
+        The critic model.
     T_cond : int
         Length of the condition.
     latent_dim : int
@@ -141,32 +143,34 @@ def train_step(real_samples, conditions, condition_model, generator_model, discr
     Returns
     -------
     None'''
-    discriminator_optimizer, generator_optimizer, conditioner_optimizer = optimizer
+    critic_optimizer, generator_optimizer, conditioner_optimizer = optimizer
 
     # Initialize random noise
     noise = tf.random.normal([batch_conditions.shape[0], T_cond, latent_dim])
 
-    # Create a GradientTape for the conditioner, generator, and discriminator.
+    # Create a GradientTape for the conditioner, generator, and critic.
     # GrandietTape collects all the operations that are executed inside it.
     # Then this operations are used to compute the gradeints of the loss function with 
     # respect to the trainable variables.
 
-    # Discriminator training
-    with tf.GradientTape(persistent=True) as tape:
-        # Ensure the tape is watching the trainable variables of conditioner
-        tape.watch(condition_model.trainable_variables)
-        # Step 1: Use condition_model to preprocess conditions and get K values
-        k_values = condition_model(conditions, training=True)
-        # Step 2: Generate fake samples using generator
-        generated_samples = generator_model([k_values, noise], training=True)
-        # Step 3: Discriminator distinguishes real and fake samples
-        real_output = discriminator_model([k_values, real_samples], training=True)
-        fake_output = discriminator_model([k_values, generated_samples], training=True)
-        # Compute the losses
-        disc_loss = compute_discriminator_loss(real_output, fake_output)
+    # Critic training
+    # The critic is trained 5 times for each batch
+    for _ in range(5):
+        with tf.GradientTape(persistent=True) as tape:
+            # Ensure the tape is watching the trainable variables of conditioner
+            tape.watch(condition_model.trainable_variables)
+            # Step 1: Use condition_model to preprocess conditions and get K values
+            k_values = condition_model(conditions, training=True)
+            # Step 2: Generate fake samples using generator
+            generated_samples = generator_model([k_values, noise], training=True)
+            # Step 3: critic distinguishes real and fake samples
+            real_output = critic_model([k_values, real_samples], training=True)
+            fake_output = critic_model([k_values, generated_samples], training=True)
+            # Compute the losses
+            critic_loss = wasserstein_loss([real_output, fake_output])
 
-    gradients_of_discriminator = tape.gradient(disc_loss, discriminator_model.trainable_variables)
-    discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator_model.trainable_variables))
+        gradients_of_critic = tape.gradient(critic_loss, critic_model.trainable_variables)
+        critic_optimizer.apply_gradients(zip(gradients_of_critic, critic_model.trainable_variables))
 
     # Generator training
     noise = tf.random.normal([batch_real_samples.shape[0], T_cond, latent_dim])
@@ -177,46 +181,46 @@ def train_step(real_samples, conditions, condition_model, generator_model, discr
         k_values = condition_model(conditions, training=True)
         # Step 2: Generate fake samples using generator
         generated_samples = generator_model([k_values, noise], training=True)
-        # Step 3: Discriminator distinguishes real and fake samples
-        fake_output = discriminator_model([k_values, generated_samples], training=True)
+        # Step 3: critic distinguishes real and fake samples
+        fake_output = critic_model([k_values, generated_samples], training=True)
         # Compute the losses
-        gen_loss = compute_generator_loss(fake_output)
+        gen_loss = wasserstein_loss(fake_output)
 
     # Calculate gradients
     gradients_of_generator = tape.gradient(gen_loss, generator_model.trainable_variables)
     generator_optimizer.apply_gradients(zip(gradients_of_generator, generator_model.trainable_variables))
     
     # Apply gradients to update weights
-    gradients_of_conditioner = tape.gradient([gen_loss, disc_loss], condition_model.trainable_variables)
+    gradients_of_conditioner = tape.gradient([gen_loss, critic_loss], condition_model.trainable_variables)
     conditioner_optimizer.apply_gradients(zip(gradients_of_conditioner, condition_model.trainable_variables))
     
     # Delete the tape to free resources
     del tape
 
     if i % 3 == 0:
-        summarize_performance(real_output, fake_output, disc_loss, gen_loss, generated_samples, metrics)
+        summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, metrics)
 
     return None
 
-def compute_discriminator_loss(real_output, fake_output):
-    '''Compute the discriminator loss.
+def compute_critic_loss(real_output, fake_output):
+    '''Compute the critic loss.
     
     Parameters
     ----------
     real_output : numpy.ndarray
-        The output of the discriminator for the real samples.
+        The output of the critic for the real samples.
     fake_output : numpy.ndarray
-        The output of the discriminator for the fake samples.
+        The output of the critic for the fake samples.
     
     Returns
     -------
-    total_disc_loss : float
-        The discriminator loss.'''
+    total_critic_loss : float
+        The critic loss.'''
 
     real_loss = binary_crossentropy(tf.ones_like(real_output), real_output)
     fake_loss = binary_crossentropy(tf.zeros_like(fake_output), fake_output)
-    total_disc_loss = real_loss + fake_loss
-    return tf.reduce_mean(total_disc_loss)
+    total_critic_loss = real_loss + fake_loss
+    return tf.reduce_mean(total_critic_loss)
 
 def compute_generator_loss(fake_output):
     '''Compute the generator loss.
@@ -224,7 +228,7 @@ def compute_generator_loss(fake_output):
     Parameters
     ----------
     fake_output : numpy.ndarray
-        The output of the discriminator for the fake samples.
+        The output of the critic for the fake samples.
     
     Returns
     -------
@@ -232,17 +236,43 @@ def compute_generator_loss(fake_output):
         The generator loss.'''
     return tf.reduce_mean(binary_crossentropy(tf.ones_like(fake_output), fake_output))
 
-def summarize_performance(real_output, fake_output, disc_loss, gen_loss, generated_samples, metrics):
+def wasserstein_loss(predictions):
+    '''Compute the Wasserstein loss.
+    
+    Parameters
+    ----------
+    predictions : list
+        List of the predictions of the critic for the real&fake/fake samples.
+    
+    Returns
+    -------
+    w_tot : float
+        The Wasserstein loss.'''
+    
+    if len(predictions) == 2:
+        real_output, fake_output = predictions
+        true_labels = -tf.ones_like(real_output)
+        fake_labels = tf.ones_like(fake_output)
+        w_real = backend.mean(real_output*true_labels)
+        w_fake = backend.mean(fake_output*fake_labels)
+        w_tot = w_real + w_fake
+    else:
+        fake_output = predictions
+        fake_labels = tf.ones_like(fake_output)
+        w_tot = backend.mean(fake_output*fake_labels)
+    return w_tot
+
+def summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, metrics):
     '''Summarize the performance of the GAN.
     
     Parameters
     ----------
     real_output : numpy.ndarray
-        The output of the discriminator for the real samples.
+        The output of the critic for the real samples.
     fake_output : numpy.ndarray
-        The output of the discriminator for the fake samples.
-    disc_loss : float
-        The discriminator loss.
+        The output of the critic for the fake samples.
+    critic_loss : float
+        The critic loss.
     gen_loss : float
         The generator loss.
     generated_samples : numpy.ndarray
@@ -254,22 +284,22 @@ def summarize_performance(real_output, fake_output, disc_loss, gen_loss, generat
     -------
     None'''
 
-    # Calculate Discriminator Accuracy on Real Samples
-    real_labels = np.ones((real_output.shape[0], 1))  # Real samples have label 1
+    # Calculate critic Accuracy on Real Samples
+    real_labels = -np.ones((real_output.shape[0], 1))  # Real samples have label 1
     real_accuracy = accuracy_score(real_labels, np.round(real_output.numpy()))
     
-    # Calculate Discriminator Accuracy on Fake Samples
-    fake_labels = np.zeros((fake_output.shape[0], 1))  # Fake samples have label 0
+    # Calculate critic Accuracy on Fake Samples
+    fake_labels = np.ones((fake_output.shape[0], 1))  # Fake samples have label 0
     fake_accuracy = accuracy_score(fake_labels, np.round(fake_output.numpy()))
 
     # add the metrics to the dictionary
-    metrics['disc_loss'].append(disc_loss.numpy())
+    metrics['critic_loss'].append(critic_loss.numpy())
     metrics['gen_loss'].append(gen_loss.numpy())
     metrics['real_acc'].append(real_accuracy)
     metrics['fake_acc'].append(fake_accuracy)
 
     plt.figure(figsize=(10, 5), tight_layout=True)
-    plt.plot(metrics['disc_loss'], label='Discriminator loss')
+    plt.plot(metrics['critic_loss'], label='critic loss')
     plt.plot(metrics['gen_loss'], label='Generator loss')
     plt.xlabel('Batch x 10')
     plt.ylabel('Loss')
@@ -293,7 +323,7 @@ def summarize_performance(real_output, fake_output, disc_loss, gen_loss, generat
     plt.legend()
     plt.savefig(f'plots/generated_samples_{os.getpid()}.png')
 
-    print(f'Batch: {i} | Disc loss: {disc_loss:.5f} | Gen loss: {gen_loss:.5f} | Real acc: {real_accuracy:.5f} | Fake acc: {fake_accuracy:.5f}')
+    print(f'Batch: {i} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | Real acc: {real_accuracy:.5f} | Fake acc: {fake_accuracy:.5f}')
     return None
 
 if __name__ == '__main__':
@@ -384,18 +414,18 @@ if __name__ == '__main__':
 
     # Create a TensorFlow Dataset object
     dataset = tf.data.Dataset.from_tensor_slices((input_train, condition_train)).batch(batch_size)
-    
-    conditioner_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0002, beta_1=0.5)
-    generator_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0002, beta_1=0.5)
-    discriminator_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0002, beta_1=0.5)
-    optimizer = [conditioner_optimizer, generator_optimizer, discriminator_optimizer]
+
+    conditioner_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
+    generator_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
+    critic_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
+    optimizer = [conditioner_optimizer, generator_optimizer, critic_optimizer]
 
     generator_model, condition_model = build_generator(T_condition, latent_dim, gen_units, T_real, num_features)
-    discriminator_model = build_discriminator(T_real, T_condition, num_features, disc_units)
+    critic_model = build_critic(T_real, T_condition, num_features, disc_units)
     # Define a dictionary to store the metrics
-    metrics = {'disc_loss': [], 'gen_loss': [], 'real_acc': [], 'fake_acc': []}
+    metrics = {'critic_loss': [], 'gen_loss': [], 'real_acc': [], 'fake_acc': []}
     for epoch in range(n_epochs):
         i = 0
         for batch_real_samples, batch_conditions in tqdm(dataset, desc=f'Epoch {epoch+1}/{n_epochs}'):
             i += 1
-            train_step(batch_real_samples, batch_conditions, condition_model, generator_model, discriminator_model, optimizer, T_condition, latent_dim, i, metrics)
+            train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, i, metrics)
