@@ -4,11 +4,14 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import tensorflow as tf
+import psutil
+import time
 from preprocessing import divide_into_windows, divide_data_condition_input
+from metrics import return_distribution, volatility, bid_ask_spread
 import argparse
 import logging
 from sklearn.model_selection import train_test_split
-from keras.utils.vis_utils import plot_model
+# from keras.utils.vis_utils import plot_model
 import os
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
@@ -52,8 +55,8 @@ def build_generator(T_cond, latent_dim, gen_units, T_real, num_features):
     dense_layer = Dense(K, activation='relu')
     output = TimeDistributed(dense_layer)(lstm)
     condition_model = Model(condition_input, output)
-    condition_model.compile(optimizer='adam', loss='mean_squared_error')
-    plot_model(condition_model, to_file=f'plots/condition_model_plot_{os.getpid()}.png', show_shapes=True, show_layer_names=True)
+    # condition_model.compile(optimizer='adam', loss='mean_squared_error')
+    # plot_model(condition_model, to_file=f'plots/{os.getpid()}/condition_model_plot.png', show_shapes=True, show_layer_names=True)
 
     # ----------------- GENERATOR -----------------
     hidden_units1 = gen_units[2]
@@ -67,8 +70,8 @@ def build_generator(T_cond, latent_dim, gen_units, T_real, num_features):
     reshape = Reshape((T_real, num_features))(dropout)
     generator_model = Model([condition_input, noise_input], reshape)
 
-    generator_model.compile(optimizer='adam', loss='mean_squared_error')
-    plot_model(generator_model, to_file=f'plots/generator_model_plot_{os.getpid()}.png', show_shapes=True, show_layer_names=True)
+    # generator_model.compile(optimizer='adam', loss='mean_squared_error')
+    # plot_model(generator_model, to_file=f'plots/{os.getpid()}/generator_model_plot.png', show_shapes=True, show_layer_names=True)
     return generator_model, condition_model
 
 def build_critic(T_real, T_cond, num_features, disc_units):
@@ -110,9 +113,9 @@ def build_critic(T_real, T_cond, num_features, disc_units):
     output = Dense(1, activation='linear')(lstm)
 
     critic_model = Model([condition_input, input], output)
-    critic_model.compile(loss='binary_crossentropy', optimizer='adam')
+    # critic_model.compile(loss='binary_crossentropy', optimizer='adam')
     # plot the models
-    plot_model(critic_model, to_file=f'plots/critic_model_plot_{os.getpid()}.png', show_shapes=True, show_layer_names=True)
+    # plot_model(critic_model, to_file=f'plots/{os.getpid()}/critic_model_plot.png', show_shapes=True, show_layer_names=True)
 
     return critic_model
 
@@ -172,6 +175,9 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
         gradients_of_critic = tape.gradient(critic_loss, critic_model.trainable_variables)
         critic_optimizer.apply_gradients(zip(gradients_of_critic, critic_model.trainable_variables))
 
+    # Delete the tape to free resources
+    del tape
+
     # Generator training
     noise = tf.random.normal([batch_real_samples.shape[0], T_cond, latent_dim])
     with tf.GradientTape(persistent=True) as tape:
@@ -189,19 +195,39 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
     # Calculate gradients
     gradients_of_generator = tape.gradient(gen_loss, generator_model.trainable_variables)
     generator_optimizer.apply_gradients(zip(gradients_of_generator, generator_model.trainable_variables))
-    
+
     # Apply gradients to update weights
     gradients_of_conditioner = tape.gradient([gen_loss, critic_loss], condition_model.trainable_variables)
     conditioner_optimizer.apply_gradients(zip(gradients_of_conditioner, condition_model.trainable_variables))
-    
+
     # Delete the tape to free resources
     del tape
 
     if i % 20 == 0:
         summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, metrics)
-        condition_model.save('/models/condition_model.h5')
-        generator_model.save('/models/generator_model.h5')
-        critic_model.save('/models/critic_model.h5')
+        condition_model.save(f'models/{os.getpid()}/condition_model.h5')
+        generator_model.save(f'models/{os.getpid()}/generator_model.h5')
+        critic_model.save(f'models/{os.getpid()}/critic_model.h5')
+        # Plot the generated samples
+        plt.figure(figsize=(10, 5), tight_layout=True)
+        plt.plot(generated_samples[0, :, 0], label='Ask price')
+        plt.plot(generated_samples[0, :, 1], label='Ask volume')
+        plt.xlabel('Time (Events)')
+        plt.title('Generated sample')
+        plt.legend()
+        plt.savefig(f'plots/{os.getpid()}/generated_samples_{i}.png')
+        plt.close()
+    if i % 100 == 0:
+        logging.info(f'Saving the generated samples. Update of stat metrics...')
+        np.save(f'generated_samples/{os.getpid()}/generated_samples.npy', generated_samples)
+        # Load all the generated samples files that are in the generated_samples folder and stack them one after the other
+        generated_samples = np.vstack([np.load(f'generated_samples/{os.getpid()}/{file}').reshape(generated_samples.shape[0]*generated_samples.shape[1], generated_samples.shape[2]) \
+                                       for file in os.listdir(f'generated_samples/{os.getpid()}/')])
+        print(generated_samples.shape)
+        return_distribution(generated_samples)
+        volatility(generated_samples)
+        bid_ask_spread(generated_samples)
+        plt.close()
 
     return None
 
@@ -287,12 +313,15 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
     -------
     None'''
 
+    # Evaluate computational resources
+    monitor_current_process()
+    
     # Calculate critic Accuracy on Real Samples
-    real_labels = -np.ones((real_output.shape[0], 1))  # Real samples have label 1
+    real_labels = -np.ones((real_output.shape[0]))  # Real samples have label -1
     real_accuracy = accuracy_score(real_labels, np.round(real_output.numpy()))
     
     # Calculate critic Accuracy on Fake Samples
-    fake_labels = np.ones((fake_output.shape[0], 1))  # Fake samples have label 0
+    fake_labels = np.ones((fake_output.shape[0]))  # Fake samples have label 1
     fake_accuracy = accuracy_score(fake_labels, np.round(fake_output.numpy()))
 
     # add the metrics to the dictionary
@@ -307,7 +336,7 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
     plt.xlabel('Batch x 10')
     plt.ylabel('Loss')
     plt.legend()
-    plt.savefig(f'plots/losses_{os.getpid()}.png')
+    plt.savefig(f'plots/{os.getpid()}/losses.png')
 
     plt.figure(figsize=(10, 5), tight_layout=True)
     plt.plot(metrics['real_acc'], label='Accuracy real')
@@ -315,7 +344,7 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
     plt.xlabel('Batch x 10')
     plt.ylabel('Accuracy')
     plt.legend()
-    plt.savefig(f'plots/accurac_{os.getpid()}.png')
+    plt.savefig(f'plots/{os.getpid()}/accurac.png')
 
     # Plot the fake samples together with the real samples
     plt.figure(figsize=(10, 5), tight_layout=True)
@@ -324,9 +353,26 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
     plt.xlabel('Time (Events)')
     plt.title('Generated sample')
     plt.legend()
-    plt.savefig(f'plots/generated_samples_{os.getpid()}.png')
+    plt.savefig(f'plots/{os.getpid()}/generated_samples.png')
 
     print(f'Batch: {i} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | Real acc: {real_accuracy:.5f} | Fake acc: {fake_accuracy:.5f}')
+    return None
+
+def monitor_current_process():
+    # Get the PID of the current process
+    current_process = psutil.Process()
+    # Get the CPU time
+    cpu_time = current_process.cpu_times()
+    user_time = cpu_time.user  # User mode
+    system_time = cpu_time.system  # Kernel mode
+    
+    # Get the memory usage
+    memory_info = current_process.memory_info()
+    rss_memory = memory_info.rss / (1024 ** 2)  # Resident Set Size in MB
+    
+    print(f"CPU Time - User Mode: {user_time}, System Mode: {system_time}")
+    print(f"Memory Usage: {rss_memory} MB")
+
     return None
 
 if __name__ == '__main__':
@@ -345,7 +391,7 @@ if __name__ == '__main__':
               'info': logging.INFO,
               'debug': logging.DEBUG}
     logging.basicConfig(format='%(message)s', level=levels[args.log])
-
+   
     # Load the data
     stock = args.stock
     if stock == 'TSLA':
@@ -354,6 +400,16 @@ if __name__ == '__main__':
         date = '2018-04-01_2018-04-30_5'
 
     N = args.N_days
+
+    # Get the CPU usage
+    # cpu_percent = psutil.cpu_percent(interval=interval)
+    
+    # # Get the RAM usage
+    # memory_info = psutil.virtual_memory()
+    # ram_percent = memory_info.percent
+    
+    # print(f"CPU Usage: {cpu_percent}%")
+    # print(f"RAM Usage: {ram_percent}%")
     
     # Read the orderbook dataframes
     dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
@@ -363,7 +419,7 @@ if __name__ == '__main__':
 
     # For now I will focus just on the first day as a proof of concept.
     window_size = 500
-    condition_length = int(window_size*0.7)
+    condition_length = int(window_size*0.6)
     input_length = window_size - condition_length
     data = dataframes[0].values[:,:5]
     print('Data shape: ', data.shape)
@@ -402,16 +458,20 @@ if __name__ == '__main__':
         condition_val = np.load(f'../data/condition_val_{stock}.npy')
         condition_test = np.load(f'../data/condition_test_{stock}.npy')
 
+    # Folders creation
+    os.mkdir(f'plots/{os.getpid()}') # Model architecture plots, metrics plots
+    os.mkdir(f'generated_samples/{os.getpid()}') # Generated samples
+    os.mkdir(f'models/{os.getpid()}') # Models
 
     # Define the parameters of the GAN.
     # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
     latent_dim = 100
-    n_epochs = 1
+    n_epochs = 10
     T_condition = condition_train.shape[1]
     T_real = input_train.shape[1]
     num_features = input_train.shape[2]
     n_units_generator = 100
-    batch_size = 32
+    batch_size = 64
     gen_units = [5, 64, 64]
     disc_units = [gen_units[0], 64, 64]
 
