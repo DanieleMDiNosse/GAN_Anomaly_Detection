@@ -433,7 +433,7 @@ if __name__ == '__main__':
     dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths][:N]
 
     # For now I will focus just on the first day as a proof of concept.
-    window_size = 800
+    window_size = 500
     condition_length = int(window_size*0.8)
     input_length = window_size - condition_length
     data = dataframes[0].values[:,:4]
