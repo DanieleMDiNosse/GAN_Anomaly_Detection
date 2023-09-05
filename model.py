@@ -119,7 +119,7 @@ def build_critic(T_real, T_cond, num_features, disc_units):
 
     return critic_model
 
-def train_step(real_samples, conditions, condition_model, generator_model, critic_model, optimizer, T_cond, latent_dim, i, metrics):
+def train_step(real_samples, conditions, condition_model, generator_model, critic_model, optimizer, T_cond, latent_dim, i, epoch, metrics):
     '''Train the GAN for one batch.
     
     Parameters
@@ -356,6 +356,8 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
     plt.savefig(f'plots/{os.getpid()}/generated_samples.png')
 
     print(f'Batch: {i} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | Real acc: {real_accuracy:.5f} | Fake acc: {fake_accuracy:.5f}')
+    with open(f'output_{os.getpid()}.txt', 'a') as f:
+        f.write(f'Epoch: {epoch} | Batch: {i} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | Real acc: {real_accuracy:.5f} | Fake acc: {fake_accuracy:.5f}\n')
     return None
 
 def monitor_current_process():
@@ -372,6 +374,10 @@ def monitor_current_process():
     
     print(f"CPU Time - User Mode: {user_time}, System Mode: {system_time}")
     print(f"Memory Usage: {rss_memory} MB")
+
+    with open(f'output_{os.getpid()}.txt', 'a') as f:
+        f.write(f"CPU Time - User Mode: {user_time}, System Mode: {system_time}\n")
+        f.write(f"Memory Usage: {rss_memory} MB\n")
 
     return None
 
@@ -391,6 +397,8 @@ if __name__ == '__main__':
               'info': logging.INFO,
               'debug': logging.DEBUG}
     logging.basicConfig(format='%(message)s', level=levels[args.log])
+    # Enable device placement logging
+    tf.debugging.set_log_device_placement(True)
    
     # Load the data
     stock = args.stock
@@ -491,4 +499,4 @@ if __name__ == '__main__':
         i = 0
         for batch_real_samples, batch_conditions in tqdm(dataset, desc=f'Epoch {epoch+1}/{n_epochs}'):
             i += 1
-            train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, i, metrics)
+            train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, i, epoch, metrics)
