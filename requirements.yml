@@ -1,0 +1,20 @@
+name: dmdn
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - pandas
+  - cudatoolkit=11.7.0 
+  - cudnn=8.4.1 
+  - tensorflow-gpu=2.6.2
+  - tqdm
+  - pyarrow
+  - statsmodels
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - psutil
+  - numba
+  - scipy
+  - pydot
+  - graphviz
