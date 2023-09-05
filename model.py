@@ -6,12 +6,11 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import psutil
 import time
-from preprocessing import divide_into_windows, divide_data_condition_input
 from metrics import return_distribution, volatility, bid_ask_spread
 import argparse
 import logging
 from sklearn.model_selection import train_test_split
-# from keras.utils.vis_utils import plot_model
+from tensorflow.keras.utils import plot_model
 import os
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
@@ -113,8 +112,6 @@ def build_critic(T_real, T_cond, num_features, disc_units):
     output = Dense(1, activation='linear')(lstm)
 
     critic_model = Model([condition_input, input], output)
-    # critic_model.compile(loss='binary_crossentropy', optimizer='adam')
-    # plot the models
     # plot_model(critic_model, to_file=f'plots/{os.getpid()}/critic_model_plot.png', show_shapes=True, show_layer_names=True)
 
     return critic_model
@@ -145,7 +142,13 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
     
     Returns
     -------
-    None'''
+    condition_model : tensorflow.keras.Model
+        The condition model.
+    generator_model : tensorflow.keras.Model
+        The generator model.
+    critic_model : tensorflow.keras.Model
+        The critic model.'''
+
     critic_optimizer, generator_optimizer, conditioner_optimizer = optimizer
 
     # Initialize random noise
@@ -175,6 +178,14 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
         gradients_of_critic = tape.gradient(critic_loss, critic_model.trainable_variables)
         critic_optimizer.apply_gradients(zip(gradients_of_critic, critic_model.trainable_variables))
 
+        # Theoretically, weight clipping is a compromise. It's an attempt to enforce a complex mathematical
+        # property (Lipschitz continuity, necessary for the Kantorovich-Rubinstein duality to hold) through a 
+        # simple, computationally efficient operation (clipping). However, it's worth noting that more sophisticated 
+        # methods like gradient penalty and spectral normalization have been proposed in subsequent research 
+        # to enforce the Lipschitz condition more effectively.
+        for w in critic_model.trainable_weights:
+            w.assign(tf.clip_by_value(w, -0.01, 0.01))
+
     # Delete the tape to free resources
     del tape
 
@@ -203,7 +214,7 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
     # Delete the tape to free resources
     del tape
 
-    if i % 20 == 0:
+    if i % 200 == 0:
         summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, metrics)
         condition_model.save(f'models/{os.getpid()}/condition_model.h5')
         generator_model.save(f'models/{os.getpid()}/generator_model.h5')
@@ -215,21 +226,21 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
         plt.xlabel('Time (Events)')
         plt.title('Generated sample')
         plt.legend()
-        plt.savefig(f'plots/{os.getpid()}/generated_samples_{i}.png')
+        plt.savefig(f'plots/{os.getpid()}/generated_samples_{epoch}_{i}.png')
         plt.close()
-    if i % 100 == 0:
+    if i % 500 == 0:
         logging.info(f'Saving the generated samples. Update of stat metrics...')
         np.save(f'generated_samples/{os.getpid()}/generated_samples.npy', generated_samples)
         # Load all the generated samples files that are in the generated_samples folder and stack them one after the other
         generated_samples = np.vstack([np.load(f'generated_samples/{os.getpid()}/{file}').reshape(generated_samples.shape[0]*generated_samples.shape[1], generated_samples.shape[2]) \
                                        for file in os.listdir(f'generated_samples/{os.getpid()}/')])
-        print(generated_samples.shape)
-        return_distribution(generated_samples)
-        volatility(generated_samples)
-        bid_ask_spread(generated_samples)
-        plt.close()
+        # print(generated_samples.shape)
+        # return_distribution(generated_samples)
+        # volatility(generated_samples)
+        # bid_ask_spread(generated_samples)
+        # plt.close()
 
-    return None
+    return condition_model, generator_model, critic_model
 
 def compute_critic_loss(real_output, fake_output):
     '''Compute the critic loss.
@@ -284,11 +295,11 @@ def wasserstein_loss(predictions):
         fake_labels = tf.ones_like(fake_output)
         w_real = backend.mean(real_output*true_labels)
         w_fake = backend.mean(fake_output*fake_labels)
-        w_tot = w_real + w_fake
+        w_tot = w_real - w_fake
     else:
         fake_output = predictions
         fake_labels = tf.ones_like(fake_output)
-        w_tot = backend.mean(fake_output*fake_labels)
+        w_tot = -backend.mean(fake_output*fake_labels)
     return w_tot
 
 def summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, metrics):
@@ -314,21 +325,13 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
     None'''
 
     # Evaluate computational resources
-    monitor_current_process()
-    
-    # Calculate critic Accuracy on Real Samples
-    real_labels = -np.ones((real_output.shape[0]))  # Real samples have label -1
-    real_accuracy = accuracy_score(real_labels, np.round(real_output.numpy()))
-    
-    # Calculate critic Accuracy on Fake Samples
-    fake_labels = np.ones((fake_output.shape[0]))  # Fake samples have label 1
-    fake_accuracy = accuracy_score(fake_labels, np.round(fake_output.numpy()))
+    # monitor_current_process()
 
     # add the metrics to the dictionary
     metrics['critic_loss'].append(critic_loss.numpy())
     metrics['gen_loss'].append(gen_loss.numpy())
-    metrics['real_acc'].append(real_accuracy)
-    metrics['fake_acc'].append(fake_accuracy)
+    metrics['real_score'].append(real_output)
+    metrics['fake_score'].append(fake_output)
 
     plt.figure(figsize=(10, 5), tight_layout=True)
     plt.plot(metrics['critic_loss'], label='critic loss')
@@ -339,12 +342,12 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
     plt.savefig(f'plots/{os.getpid()}/losses.png')
 
     plt.figure(figsize=(10, 5), tight_layout=True)
-    plt.plot(metrics['real_acc'], label='Accuracy real')
-    plt.plot(metrics['fake_acc'], label='Accuracy fake')
+    plt.plot(metrics['real_score'], label='Accuracy real')
+    plt.plot(metrics['fake_score'], label='Accuracy fake')
     plt.xlabel('Batch x 10')
-    plt.ylabel('Accuracy')
+    plt.ylabel('Score')
     plt.legend()
-    plt.savefig(f'plots/{os.getpid()}/accurac.png')
+    plt.savefig(f'plots/{os.getpid()}/score.png')
 
     # Plot the fake samples together with the real samples
     plt.figure(figsize=(10, 5), tight_layout=True)
@@ -355,9 +358,7 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
     plt.legend()
     plt.savefig(f'plots/{os.getpid()}/generated_samples.png')
 
-    print(f'Batch: {i} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | Real acc: {real_accuracy:.5f} | Fake acc: {fake_accuracy:.5f}')
-    with open(f'output_{os.getpid()}.txt', 'a') as f:
-        f.write(f'Epoch: {epoch} | Batch: {i} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | Real acc: {real_accuracy:.5f} | Fake acc: {fake_accuracy:.5f}\n')
+    logging.info(f'Epoch: {epoch} | Batch: {i} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | Real acc: {real_output:.5f} | Fake acc: {fake_output:.5f}\n')
     return None
 
 def monitor_current_process():
@@ -372,12 +373,8 @@ def monitor_current_process():
     memory_info = current_process.memory_info()
     rss_memory = memory_info.rss / (1024 ** 2)  # Resident Set Size in MB
     
-    print(f"CPU Time - User Mode: {user_time}, System Mode: {system_time}")
-    print(f"Memory Usage: {rss_memory} MB")
-
-    with open(f'output_{os.getpid()}.txt', 'a') as f:
-        f.write(f"CPU Time - User Mode: {user_time}, System Mode: {system_time}\n")
-        f.write(f"Memory Usage: {rss_memory} MB\n")
+    logging.info(f"CPU Time - User Mode: {user_time}, System Mode: {system_time}\n")
+    logging.info(f"Memory Usage: {rss_memory} MB\n")
 
     return None
 
@@ -396,7 +393,7 @@ if __name__ == '__main__':
               'warning': logging.WARNING,
               'info': logging.INFO,
               'debug': logging.DEBUG}
-    logging.basicConfig(format='%(message)s', level=levels[args.log])
+    logging.basicConfig(filename=f'output_{os.getpid()}', format='%(message)s', level=levels[args.log])
     # Enable device placement logging
     tf.debugging.set_log_device_placement(True)
    
@@ -408,6 +405,16 @@ if __name__ == '__main__':
         date = '2018-04-01_2018-04-30_5'
 
     N = args.N_days
+
+    physical_devices = tf.config.experimental.list_physical_devices('GPU')
+    if len(physical_devices) == 0:
+        logging.info("No GPUs available.")
+    else:
+        logging.info("Available GPUs:")
+        for device in physical_devices:
+            logging.info(f'{device}\n')
+
+
 
     # Get the CPU usage
     # cpu_percent = psutil.cpu_percent(interval=interval)
@@ -426,45 +433,51 @@ if __name__ == '__main__':
     dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths][:N]
 
     # For now I will focus just on the first day as a proof of concept.
-    window_size = 500
-    condition_length = int(window_size*0.6)
+    window_size = 800
+    condition_length = int(window_size*0.8)
     input_length = window_size - condition_length
-    data = dataframes[0].values[:,:5]
-    print('Data shape: ', data.shape)
+    data = dataframes[0].values[:,:4]
     
-    if not os.path.exists(f'../data/input_train_{stock}.npy'):
+    if not os.path.exists(f'../data/input_train_{stock}_{window_size}.npy'):
         logging.info('\n---------- PREPROCESSING ----------')
-        logging.info('\nDividing the data into windows...')
-        input_data = np.array(divide_into_windows(data, window_size))
-        logging.info('Scaling the data...')
-        scaler = StandardScaler()
-        input_data = scaler.fit_transform(input_data.reshape(-1, input_data.shape[-1])).reshape(input_data.shape)
-        logging.info('Split the data into train, validation and test sets...')
-        train, test = train_test_split(input_data, test_size=0.2, shuffle=False)
-        train, val = train_test_split(train, test_size=0.2, shuffle=False)
-        np.save(f'../data/train_{stock}.npy', train)
-        np.save(f'../data/val_{stock}.npy', val)
-        np.save(f'../data/test_{stock}.npy', test)
-        logging.info('Divide the data into conditions and input...')
-        condition_train, input_train = divide_data_condition_input(train, condition_length)
-        condition_val, input_val = divide_data_condition_input(val, condition_length)
-        condition_test, input_test = divide_data_condition_input(test, condition_length)
-        logging.info('Save all the preprocessed data...')
-        np.save(f'../data/condition_train_{stock}.npy', condition_train)
-        np.save(f'../data/condition_val_{stock}.npy', condition_val)
-        np.save(f'../data/condition_test_{stock}.npy', condition_test)
-        np.save(f'../data/input_train_{stock}.npy', input_train)
-        np.save(f'../data/input_val_{stock}.npy', input_val)
-        np.save(f'../data/input_test_{stock}.npy', input_test)
-        logging.info('\n---------- DONE ----------')
+        try:
+            from preprocessing import divide_into_windows, divide_data_condition_input
+            logging.info('\nDividing the data into windows...')
+            input_data = np.array(divide_into_windows(data, window_size))
+            logging.info('Scaling the data...')
+            scaler = StandardScaler()
+            input_data = scaler.fit_transform(input_data.reshape(-1, input_data.shape[-1])).reshape(input_data.shape)
+            logging.info('Split the data into train, validation and test sets...')
+            train, test = train_test_split(input_data, test_size=0.2, shuffle=False)
+            train, val = train_test_split(train, test_size=0.2, shuffle=False)
+            np.save(f'../data/train_{stock}_{window_size}.npy', train)
+            np.save(f'../data/val_{stock}_{window_size}.npy', val)
+            np.save(f'../data/test_{stock}_{window_size}.npy', test)
+            logging.info('Divide the data into conditions and input...')
+            condition_train, input_train = divide_data_condition_input(train, condition_length)
+            condition_val, input_val = divide_data_condition_input(val, condition_length)
+            condition_test, input_test = divide_data_condition_input(test, condition_length)
+            logging.info('Save all the preprocessed data...')
+            np.save(f'../data/condition_train_{stock}_{window_size}.npy', condition_train)
+            np.save(f'../data/condition_val_{stock}_{window_size}.npy', condition_val)
+            np.save(f'../data/condition_test_{stock}_{window_size}.npy', condition_test)
+            np.save(f'../data/input_train_{stock}_{window_size}.npy', input_train)
+            np.save(f'../data/input_val_{stock}_{window_size}.npy', input_val)
+            np.save(f'../data/input_test_{stock}_{window_size}.npy', input_test)
+            logging.info('\n---------- DONE ----------')
+        except Exception as e:
+            logging.error(f'Error: {e}')
+            exit()
     else:
+        pass
         logging.info('\nLoading train, validation and test sets...')
-        input_train = np.load(f'../data/input_train_{stock}.npy')
-        input_val = np.load(f'../data/input_val_{stock}.npy')
-        input_test = np.load(f'../data/input_test_{stock}.npy')
-        condition_train = np.load(f'../data/condition_train_{stock}.npy')
-        condition_val = np.load(f'../data/condition_val_{stock}.npy')
-        condition_test = np.load(f'../data/condition_test_{stock}.npy')
+
+        input_train = np.load(f'../data/input_train_{stock}.npy', mmap_mode='r')
+        input_val = np.load(f'../data/input_val_{stock}.npy', mmap_mode='r')
+        input_test = np.load(f'../data/input_test_{stock}.npy', mmap_mode='r')
+        condition_train = np.load(f'../data/condition_train_{stock}.npy', mmap_mode='r')
+        condition_val = np.load(f'../data/condition_val_{stock}.npy', mmap_mode='r')
+        condition_test = np.load(f'../data/condition_test_{stock}.npy', mmap_mode='r')
 
     # Folders creation
     os.mkdir(f'plots/{os.getpid()}') # Model architecture plots, metrics plots
@@ -474,7 +487,7 @@ if __name__ == '__main__':
     # Define the parameters of the GAN.
     # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
     latent_dim = 100
-    n_epochs = 10
+    n_epochs = 100
     T_condition = condition_train.shape[1]
     T_real = input_train.shape[1]
     num_features = input_train.shape[2]
@@ -484,7 +497,7 @@ if __name__ == '__main__':
     disc_units = [gen_units[0], 64, 64]
 
     # Create a TensorFlow Dataset object
-    dataset = tf.data.Dataset.from_tensor_slices((input_train, condition_train)).batch(batch_size)
+    #dataset = tf.data.Dataset.from_tensor_slices((input_train, condition_train)).batch(batch_size)
 
     conditioner_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
     generator_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
@@ -493,10 +506,49 @@ if __name__ == '__main__':
 
     generator_model, condition_model = build_generator(T_condition, latent_dim, gen_units, T_real, num_features)
     critic_model = build_critic(T_real, T_condition, num_features, disc_units)
+
     # Define a dictionary to store the metrics
-    metrics = {'critic_loss': [], 'gen_loss': [], 'real_acc': [], 'fake_acc': []}
+    metrics = {'critic_loss': [], 'gen_loss': [], 'real_score': [], 'fake_score': []}
+
+    # Train the GAN. When I load the data, I use the argumento mmap_mode='r' to avoid to load the data in memory.
+    # This is because the data is too big to fit in memory. This means that the data is loaded in memory only when
+    # when it is needed.
+    num_subvectors = 5
+    slice = int(input_train.shape[0] / num_subvectors)
+    for i in range(num_subvectors):
+        logging.info(f'\n---------- Training on piece {i} ----------\n')
+        input_train = input_train[i*slice: (i+1)*slice]
+        condition_train = condition_train[i*slice: (i+1)*slice]
+        dataset = tf.data.Dataset.from_tensor_slices((input_train, condition_train)).batch(batch_size)
+        if i > 0:
+            # Load the models at the end of the previous training
+            condition_model = tf.keras.models.load_model(f'models/{os.getpid()}/condition_model.h5')
+            generator_model = tf.keras.models.load_model(f'models/{os.getpid()}/generator_model.h5')
+            critic_model = tf.keras.models.load_model(f'models/{os.getpid()}/critic_model.h5')
+        for epoch in range(n_epochs):
+            i = 0
+            for batch_real_samples, batch_conditions in tqdm(dataset, desc=f'Epoch {epoch+1}/{n_epochs}'):
+                i += 1
+                condition_model, generator_model, critic_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, i, epoch, metrics)
+        # save the models
+        condition_model.save(f'models/{os.getpid()}/condition_model.h5')
+        generator_model.save(f'models/{os.getpid()}/generator_model.h5')
+        critic_model.save(f'models/{os.getpid()}/critic_model.h5')
+
+    # Remeber to handle the last piece
+    logging.info(f'\n---------- Training on the LAST piece ----------\n')
+    input_train = input_train[(i+1)*slice:]
+    condition_train = condition_train[(i+1)*slice:]
+    dataset = tf.data.Dataset.from_tensor_slices((input_train, condition_train)).batch(batch_size)
+    condition_model = tf.keras.models.load_model(f'models/{os.getpid()}/condition_model.h5')
+    generator_model = tf.keras.models.load_model(f'models/{os.getpid()}/generator_model.h5')
+    critic_model = tf.keras.models.load_model(f'models/{os.getpid()}/critic_model.h5')
     for epoch in range(n_epochs):
         i = 0
         for batch_real_samples, batch_conditions in tqdm(dataset, desc=f'Epoch {epoch+1}/{n_epochs}'):
             i += 1
-            train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, i, epoch, metrics)
+            condition_model, generator_model, critic_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, i, epoch, metrics)
+    # save the models
+    condition_model.save(f'models/{os.getpid()}/condition_model.h5')
+    generator_model.save(f'models/{os.getpid()}/generator_model.h5')
+    critic_model.save(f'models/{os.getpid()}/critic_model.h5')
