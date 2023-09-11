@@ -1,4 +1,4 @@
 #!/bin/bash
-conda activate gan_env
+source danielemdn_env/bin/activate
 
 python model.py TSLA -N=1
