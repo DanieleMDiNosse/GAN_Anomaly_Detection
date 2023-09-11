@@ -1,4 +1,4 @@
 #!/bin/bash
-source ../danielemdn_env/bin/activate
+source danielemdn_env/bin/activate
 
-python3.7 model.py MSFT -N=1
+python model.py TSLA -N=1
