@@ -53,6 +53,81 @@ def divide_into_windows(data, window_size):
         windows.append(data[i:i+window_size, :])
     return windows
 
+
+def evaluate_imbalance(data, levels):
+    '''This function evaluates the imbalance between the bid and ask sides of the order book up to a certain level.
+    The imbalance is defined as the ratio between the bid volumes and the sum of the bid and ask volumes.
+    
+    Parameters
+    ----------
+    v_b : numpy array
+        Bid volumes.
+    v_a : numpy array
+        Ask volumes.
+    level : int
+        Level of the order book.
+        
+    Returns
+    -------
+    imbalance : numpy array
+        Array containing the imbalance for each time step.'''
+
+    volumes = data[:,[i for i in range(1, data.shape[1], 2)]]
+    v_a = volumes[:, ::2]
+    v_b = volumes[:, 1::2]
+    imbalance = v_b.sum(axis=1) / (v_b.sum(axis=1) + v_a.sum(axis=1))
+    return imbalance
+
+def evaluate_spread(p_b, p_a):
+    '''This function evaluates the spread between the bid and ask sides of the order book.
+    The spread is defined as the difference between the best ask price and the best bid price.
+    
+    Parameters
+    ----------
+    p_b : numpy array
+        Bid prices.
+    p_a : numpy array
+        Ask prices.
+        
+    Returns
+    -------
+    spread : numpy array
+        Array containing the spread for each time step.'''
+    
+    spread = p_b - p_a
+    return spread
+
+def input_generation(returns, imbalance, spread, window_size, condition_size):
+    '''This function generates the input for the GAN. The input is a multivariate time series
+    composed by the returns, the imbalance and the spread. The function returns a numpy array
+    containing the input data.
+    
+    Parameters
+    ----------
+    returns : numpy array
+        Array containing the returns.
+    imbalance : numpy array
+        Array containing the imbalance.
+    spread : numpy array
+        Array containing the spread.
+    window_size : int
+        Length of the sliding window.
+    condition_size : int
+        Length of the condition.
+    
+    Returns
+    -------
+    input_data : numpy array
+        Array containing the input data.'''
+    
+    input_data = np.zeros((returns.shape[0] - window_size, window_size, returns.shape[1] + imbalance.shape[1] + spread.shape[1]))
+    for i in range(returns.shape[0] - window_size):
+        input_data[i, :, :returns.shape[1]] = returns[i:i+window_size, :]
+        input_data[i, :, returns.shape[1]:returns.shape[1]+imbalance.shape[1]] = imbalance[i:i+window_size, :]
+        input_data[i, :, returns.shape[1]+imbalance.shape[1]:] = spread[i:i+window_size, :]
+    return input_data
+
+
 @nb.jit(nopython=True)
 def divide_data_condition_input(data, condition_size):
     '''Divide the data into condition and input data. The condition data is the data that
@@ -60,16 +135,16 @@ def divide_data_condition_input(data, condition_size):
     
     Parameters
     ----------
-    data : numpy array
+    data : numpy array or list
         Array containing the data (like training data for instance).
     condition_size : int
         Length of the condition.
     
     Returns
     -------
-    condition : numpy array
+    condition : list
         Array containing the condition data.
-    input_data : numpy array
+    input_data : list
         Array containing the input data.'''
     
     condition = []
@@ -117,6 +192,43 @@ def sliding_windows_stat_numba(times, window_size, i):
         timedeltas.append(timedelta/60) # Convert to minutes each timedelta
     
     return timedeltas
+
+@nb.jit(nopython=True)
+def divide_vector(vector, N):
+    '''This function takes as input a vector and divides it into N subvectors of the same
+    length. The last subvector can have a different length.
+    
+    Parameters
+    ----------
+    vector : numpy array
+        Vector to be divided.
+    N : int
+        Number of subvectors.
+    
+    Returns
+    -------
+    subvectors : list
+        List of subvectors.
+    '''
+    subvectors = []
+    length = int(vector.shape[0]/N)
+    for i in range(N):
+        subvectors.append(vector[i*length:(i+1)*length])
+    subvectors.append(vector[(i+1)*length:])
+    return subvectors
+
+def fast_autocorrelation(x, alpha=0.05):
+    n = len(x)
+    x = np.pad(x, (0, n), mode='constant')  # Zero padding
+    f = np.fft.fft(x)
+    p = np.absolute(f)**2
+    r = np.fft.ifft(p)
+    r = np.real(r)[:n]
+    r = r / np.max(r)  # Normalize
+    lag_no_corr = np.where(r < alpha)[0][0]
+
+    return r, lag_no_corr
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -186,17 +298,14 @@ if __name__ == "__main__":
         plt.show()
         exit()
 
-    # For now consider just one window size and one day
-    window_size = 500
-    data = dataframes[0].values
-    input_data = np.array(divide_into_windows(data, window_size))
+    data = ['condition_train']
+    for d in data:
+        with open(f'output_{os.getpid()}.txt', 'a') as f:
+            f.write(f'{d}\n')
+        input = np.load(f'../data/{d}_{stock}.npy')
+        with open(f'output_{os.getpid()}.txt', 'a') as f:
+            f.write(f'{input.shape}\n')
+        subvectors = divide_vector(input, 5)
+        for i, v in enumerate(subvectors):
+            np.save(f'../data/{d}_{stock}_{i}.npy', v)
 
-    # Normalize all the features with StandardScaler
-    scaler = StandardScaler()
-    input_data = scaler.fit_transform(input_data.reshape(-1, input_data.shape[-1])).reshape(input_data.shape)
-    # compute the inverse tranformation of one sample
-    # inv_data = scaler.inverse_transform(input_data[0].reshape(-1, input_data.shape[-1])).reshape(input_data.shape[-1])
-    # inv_data = scaler.inverse_transform(input_data.reshape(-1, input_data.shape[-1])).reshape(input_data.shape)
-    # Divide the data into train, validation and test set
-    train, test = train_test_split(input_data, test_size=0.2, shuffle=False)
-    train, val = train_test_split(train, test_size=0.2, shuffle=False)
