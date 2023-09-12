@@ -159,7 +159,7 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-#Models
+# Models
 *.h5
 *.hdf5
 *.hdf5_lock
@@ -167,8 +167,11 @@ cython_debug/
 *.model
 *.npy
 
-#Plots
+# Plots
 *.png
 *.jpg
 *.jpeg
 *.svg
+
+# Log
+*.log

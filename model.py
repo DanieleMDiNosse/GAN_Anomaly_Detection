@@ -423,56 +423,29 @@ if __name__ == '__main__':
         for device in physical_devices:
             logging.info(f'{device}\n')
     
-    # Read the orderbook dataframes
+    # Read the features dataframes
     dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
-    dataframes_paths = [path for path in dataframes_paths if 'orderbook' in path]
+    dataframes_paths = [path for path in dataframes_paths if 'features' in path]
     dataframes_paths.sort()
     dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths][:N]
 
     window_size = 500
-    levels = 4
     condition_length = int(window_size*0.8)
     input_length = window_size - condition_length
+    n_features = dataframes[0].shape[1]
     for day in range(len(dataframes)):
         logging.info(f'##################### START DAY {day+1}/{len(dataframes)} #####################')
-        data = dataframes[day].values[:,:levels]
-        # Convert data entries into int32 to avoid memory issues
-        data = data.astype(np.int32)
-
-        logging.info('Evaluate the returns, the volatility, the imbalance and the bid-ask spread...')
-        p_a, p_b = data[:,0], data[:,2]
-        returns = np.diff(p_a)
-        returns = np.insert(returns, 0, 0)
-        volatilty = np.std(p_a)
-        imbalance = evaluate_imbalance(data, levels)
-        spread = evaluate_spread(p_b, p_a)
-        logging.info('Done.')
-
-        # Create a new array to store the features
-        data = np.empty(shape=(data.shape[0], 4))
-        data[:,0] = returns
-        data[:,1] = volatilty
-        data[:,2] = imbalance
-        data[:,3] = spread
-
-        # Compute the autocorreltions
-        logging.info('Compute the lag in which the autocorrelations are negligible...')
-        autocorrelations = []
-        for i in range(data.shape[1]):
-            autocorrelations.append(fast_autocorrelation(data[:,i])[1])
-            # plot_acf(data[:,i], lags=data[:,i].shape[0])
-            # plt.savefig(f'plots/{os.getpid()}/autocorrelation_{i}.png')
-        logging.info(f'Autocorrelations: {autocorrelations}')
-        logging.info('Done.')
-        exit()
+        data = dataframes[day].values
+        # # Convert data entries into int32 to avoid memory issues
+        # data = data.astype(np.int32)
         
-        if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{levels}_{day+1}.npy'):
+        if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{day+1}.npy'):
             logging.info('\n---------- PREPROCESSING ----------')
             scaler = StandardScaler()
             try:
                 # Create a memmap to store the data. The first shape is the number of sample for each piece
                 # multiplied by the number of pieces.
-                final_shape = (2008536, window_size, levels)
+                final_shape = (2008536, window_size, n_features)
                 fp = np.memmap("final_data.dat", dtype='int32', mode='w+', shape=final_shape)
                 # Divide data in 10 pieces
                 sub_data = np.array_split(data, 10)
@@ -501,9 +474,9 @@ if __name__ == '__main__':
                 logging.info('\nSplit the data into train, validation and test sets...')
                 train, test = fp[:int(fp.shape[0]*0.75)], fp[int(fp.shape[0]*0.75):]
                 train, val = train[:int(train.shape[0]*0.75)], train[int(train.shape[0]*0.75):]
-                np.save(f'../data/train_{stock}_{window_size}_{levels}_{day+1}.npy', train)
-                np.save(f'../data/val_{stock}_{window_size}_{levels}_{day+1}.npy', val)
-                np.save(f'../data/test_{stock}_{window_size}_{levels}_{day+1}.npy', test)
+                np.save(f'../data/train_{stock}_{window_size}_{day+1}.npy', train)
+                np.save(f'../data/val_{stock}_{window_size}_{day+1}.npy', val)
+                np.save(f'../data/test_{stock}_{window_size}_{day+1}.npy', test)
                 logging.info('Done.')
 
                 logging.info('\nDivide the data into conditions and input...')
@@ -513,12 +486,12 @@ if __name__ == '__main__':
                 logging.info('Done.')
 
                 logging.info('\nSave all the preprocessed data...')
-                np.save(f'../data/condition_train_{stock}_{window_size}_{levels}_{day+1}.npy', condition_train)
-                np.save(f'../data/condition_val_{stock}_{window_size}_{levels}_{day+1}.npy', condition_val)
-                np.save(f'../data/condition_test_{stock}_{window_size}_{levels}_{day+1}.npy', condition_test)
-                np.save(f'../data/input_train_{stock}_{window_size}_{levels}_{day+1}.npy', input_train)
-                np.save(f'../data/input_val_{stock}_{window_size}_{levels}_{day+1}.npy', input_val)
-                np.save(f'../data/input_test_{stock}_{window_size}_{levels}_{day+1}.npy', input_test)
+                np.save(f'../data/condition_train_{stock}_{window_size}_{day+1}.npy', condition_train)
+                np.save(f'../data/condition_val_{stock}_{window_size}_{day+1}.npy', condition_val)
+                np.save(f'../data/condition_test_{stock}_{window_size}_{day+1}.npy', condition_test)
+                np.save(f'../data/input_train_{stock}_{window_size}_{day+1}.npy', input_train)
+                np.save(f'../data/input_val_{stock}_{window_size}_{day+1}.npy', input_val)
+                np.save(f'../data/input_test_{stock}_{window_size}_{day+1}.npy', input_test)
                 logging.info('Done.')
                 logging.info('\n---------- DONE ----------')
             except Exception as e:
@@ -552,18 +525,15 @@ if __name__ == '__main__':
         disc_units = [gen_units[0], 64, 64]
 
         # Use logging.info to print all the hyperparameters
-        logging.info(f'HYPERPARAMETERS:\n\tlatent_dim: {latent_dim}\n\tn_epochs: {n_epochs}\n\tT_condition: {T_condition}\n\tT_real: {T_real}\n\tLevels: {levels}\n\tbatch_size: {batch_size}')
-
-        # Create a TensorFlow Dataset object
-        #dataset = tf.data.Dataset.from_tensor_slices((input_train, condition_train)).batch(batch_size)
+        logging.info(f'HYPERPARAMETERS:\n\tlatent_dim: {latent_dim}\n\tn_epochs: {n_epochs}\n\tT_condition: {T_condition}\n\tT_real: {T_real}\n\Features: {dataframes[day].columns}\n\tbatch_size: {batch_size}')
 
         conditioner_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
         generator_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
         critic_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
         optimizer = [conditioner_optimizer, generator_optimizer, critic_optimizer]
 
-        generator_model, condition_model = build_generator(T_condition, latent_dim, gen_units, T_real, levels)
-        critic_model = build_critic(T_real, T_condition, levels, disc_units)
+        generator_model, condition_model = build_generator(T_condition, latent_dim, gen_units, T_real, n_features)
+        critic_model = build_critic(T_real, T_condition, n_features, disc_units)
 
         # Define a dictionary to store the metrics
         metrics = {'critic_loss': [], 'gen_loss': [], 'real_score': [], 'fake_score': []}

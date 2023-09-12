@@ -133,7 +133,7 @@ for day in range(N):
 
     # Plot the autocorrelation of the features
     logging.info('Plot the autocorrelation of the features...')
-    fig, axs = plt.subplots(3, 1, figsize=(10, 10), tight_layout=True)
+    fig, axs = plt.subplots(6, 1, figsize=(10, 10), tight_layout=True)
     for feature, i in zip(features,range(data.shape[1])):
         plot_acf(data[:,i], lags=1500, ax=axs[i])
         axs[i].set_title(f'Autocorrelation of {feature}')
