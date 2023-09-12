@@ -12,6 +12,7 @@ import argparse
 import logging
 # from tensorflow.keras.utils import plot_model
 import os
+import gc
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
@@ -476,6 +477,12 @@ if __name__ == '__main__':
                 
                 logging.info('\nSplit the data into train, validation and test sets...')
                 train, test = fp[:int(fp.shape[0]*0.75)], fp[int(fp.shape[0]*0.75):]
+                # Explicitly close the memory-mapped file
+                fp._mmap.close()
+                # Explicitly delete the memory-mapped array
+                del fp
+                # Optionally invoke the garbage collector
+                gc.collect()
                 train, val = train[:int(train.shape[0]*0.75)], train[int(train.shape[0]*0.75):]
                 np.save(f'../data/train_{stock}_{window_size}_{day+1}.npy', train)
                 np.save(f'../data/val_{stock}_{window_size}_{day+1}.npy', val)
