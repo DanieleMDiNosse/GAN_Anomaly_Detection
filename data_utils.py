@@ -12,6 +12,7 @@ from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
+
 def rename_files(folder_path):
     old_names = os.listdir(folder_path)
     old_names_splitted = [name.split('_') for name in old_names]
@@ -54,19 +55,18 @@ def divide_into_windows(data, window_size):
     return windows
 
 
-def evaluate_imbalance(data, levels):
+def evaluate_imbalance(data, f):
     '''This function evaluates the imbalance between the bid and ask sides of the order book up to a certain level.
+    It averages over a number of events equal to the sampling frequency.
     The imbalance is defined as the ratio between the bid volumes and the sum of the bid and ask volumes.
     
     Parameters
     ----------
-    v_b : numpy array
-        Bid volumes.
-    v_a : numpy array
-        Ask volumes.
-    level : int
-        Level of the order book.
-        
+    data : numpy array
+        Array containing the order book data.
+    f : int
+        Sampling frequency.
+
     Returns
     -------
     imbalance : numpy array
@@ -75,8 +75,32 @@ def evaluate_imbalance(data, levels):
     volumes = data[:,[i for i in range(1, data.shape[1], 2)]]
     v_a = volumes[:, ::2]
     v_b = volumes[:, 1::2]
-    imbalance = v_b.sum(axis=1) / (v_b.sum(axis=1) + v_a.sum(axis=1))
+    v_b_summed = np.array([v_b[i:i+f].sum(axis=0) for i in range(0, v_b.shape[0]-f)])
+    v_a_summed = np.array([v_a[i:i+f].sum(axis=0) for i in range(0, v_a.shape[0]-f)])
+    imbalance = v_b_summed.sum(axis=1) / (v_b_summed.sum(axis=1) + v_a_summed.sum(axis=1))
     return imbalance
+
+def rolling_volatility(p, f):
+    '''This function computes the rolling volatility of the ask prices up to a certain level.
+    It averages over a number of events equal to the sampling frequency.
+    The rolling volatility is defined as the standard deviation of the returns.
+    
+    Parameters
+    ----------
+    p_a : numpy array
+        Ask prices.
+    f : int
+        Sampling frequency.
+    
+    Returns
+    -------
+    rolling_volatility : numpy array
+        Array containing the rolling volatility for each time step.'''
+    
+    returns = np.diff(p)
+    returns = np.insert(returns, 0, 0)
+    rolling_volatility = np.array([returns[i:i+f].std() for i in range(0, returns.shape[0]-f)])
+    return rolling_volatility
 
 def evaluate_spread(p_b, p_a):
     '''This function evaluates the spread between the bid and ask sides of the order book.
@@ -94,7 +118,7 @@ def evaluate_spread(p_b, p_a):
     spread : numpy array
         Array containing the spread for each time step.'''
     
-    spread = p_b - p_a
+    spread = p_a - p_b
     return spread
 
 def input_generation(returns, imbalance, spread, window_size, condition_size):
@@ -298,14 +322,5 @@ if __name__ == "__main__":
         plt.show()
         exit()
 
-    data = ['condition_train']
-    for d in data:
-        with open(f'output_{os.getpid()}.txt', 'a') as f:
-            f.write(f'{d}\n')
-        input = np.load(f'../data/{d}_{stock}.npy')
-        with open(f'output_{os.getpid()}.txt', 'a') as f:
-            f.write(f'{input.shape}\n')
-        subvectors = divide_vector(input, 5)
-        for i, v in enumerate(subvectors):
-            np.save(f'../data/{d}_{stock}_{i}.npy', v)
+    
 
