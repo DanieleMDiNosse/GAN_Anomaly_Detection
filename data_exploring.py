@@ -24,8 +24,11 @@ levels = {'critical': logging.CRITICAL,
             'warning': logging.WARNING,
             'info': logging.INFO,
             'debug': logging.DEBUG}
-os.remove('explore')
-logging.basicConfig(filename=f'explore', format='%(message)s', level=levels[args.log])
+
+if os.path.exists('explore.log'):
+    os.remove('explore.log')
+
+logging.basicConfig(filename=f'explore.log', format='%(message)s', level=levels[args.log])
 
 # Load the data
 stock = args.stock
@@ -112,6 +115,7 @@ for day in range(N):
     logging.info(f'Dataframe:\n {df.head()}')
     # Save the dataframe
     df.to_parquet(f'../data/{stock}_{date}/features_{day}.parquet')
+    exit()
 
 
     # Perform the Ljung-Box test on the features using lags equal to [100, 200, 300 ... 1000]

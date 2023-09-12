@@ -119,6 +119,7 @@ def build_critic(T_real, T_cond, num_features, disc_units):
 
     return critic_model
 
+@tf.function
 def train_step(real_samples, conditions, condition_model, generator_model, critic_model, optimizer, T_cond, latent_dim, i, epoch, metrics):
     '''Train the GAN for one batch.
     
@@ -225,7 +226,7 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
     # Delete the tape to free resources
     del tape
 
-    if i % 200 == 0:
+    if i % 500 == 0:
         summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, metrics)
         condition_model.save(f'models/{os.getpid()}/condition_model.h5')
         generator_model.save(f'models/{os.getpid()}/generator_model.h5')
@@ -240,7 +241,7 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
         plt.savefig(f'plots/{os.getpid()}/generated_samples_{epoch}_{i}.png')
         plt.savefig(f'plots/{os.getpid()}/generated_samples_{epoch}_{i}.png')
         plt.close()
-    if i % 500 == 0:
+    if i % 1000 == 0:
         logging.info(f'Saving the generated samples. Update of stat metrics...')
         np.save(f'generated_samples/{os.getpid()}/generated_samples.npy', generated_samples)
         # Load all the generated samples files that are in the generated_samples folder and stack them one after the other
@@ -394,7 +395,8 @@ if __name__ == '__main__':
               'warning': logging.WARNING,
               'info': logging.INFO,
               'debug': logging.DEBUG}
-    logging.basicConfig(filename=f'output_{os.getpid()}', format='%(message)s', level=levels[args.log])
+    job_id = os.getenv("PBS_JOBID")
+    logging.basicConfig(filename=f'output_{job_id}.log', format='%(message)s', level=levels[args.log])
 
     logger = tf.get_logger()
     logger.setLevel('ERROR')
@@ -420,6 +422,7 @@ if __name__ == '__main__':
         logging.info("No GPUs available.")
     else:
         logging.info("Available GPUs:")
+        tf.config.experimental.set_memory_growth(physical_devices[0], True)
         for device in physical_devices:
             logging.info(f'{device}\n')
     
@@ -481,8 +484,13 @@ if __name__ == '__main__':
 
                 logging.info('\nDivide the data into conditions and input...')
                 condition_train, input_train = divide_data_condition_input(train, condition_length)
+                condition_train, input_train = np.array(condition_train), np.array(input_train)
+                # logging.info(f'condition_train shape: {condition_train.shape}')
+                # logging.info(f'input_train shape: {input_train.shape}')
                 condition_val, input_val = divide_data_condition_input(val, condition_length)
+                condition_val, input_val = np.array(condition_val), np.array(input_val)
                 condition_test, input_test = divide_data_condition_input(test, condition_length)
+                condition_test, input_test = np.array(condition_test), np.array(input_test)
                 logging.info('Done.')
 
                 logging.info('\nSave all the preprocessed data...')
@@ -538,7 +546,7 @@ if __name__ == '__main__':
         # Define a dictionary to store the metrics
         metrics = {'critic_loss': [], 'gen_loss': [], 'real_score': [], 'fake_score': []}
 
-        # Train the GAN. When I load the data, I use the argumento mmap_mode='r' to avoid to load the data in memory.
+        # Train the GAN. When I load the data, I use the argument mmap_mode='r' to avoid to load the data in memory.
         # This is because the data is too big to fit in memory. This means that the data is loaded in memory only when
         # when it is needed.
         num_subvectors = 5
@@ -549,15 +557,15 @@ if __name__ == '__main__':
             condition_train = condition_train[i*slice: (i+1)*slice]
             dataset = tf.data.Dataset.from_tensor_slices((input_train, condition_train)).batch(batch_size)
             if i > 0:
-                # Load the models at the end of the previous training
+                # Load the models of the previous training (previous piece)
                 condition_model = tf.keras.models.load_model(f'models/{os.getpid()}/condition_model.h5')
                 generator_model = tf.keras.models.load_model(f'models/{os.getpid()}/generator_model.h5')
                 critic_model = tf.keras.models.load_model(f'models/{os.getpid()}/critic_model.h5')
             for epoch in range(n_epochs):
-                i = 0
+                j = 0
                 for batch_real_samples, batch_conditions in tqdm(dataset, desc=f'Epoch {epoch+1}/{n_epochs}'):
-                    i += 1
-                    condition_model, generator_model, critic_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, i, epoch, metrics)
+                    j += 1
+                    condition_model, generator_model, critic_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, j, epoch, metrics)
             # save the models
             condition_model.save(f'models/{os.getpid()}/condition_model.h5')
             generator_model.save(f'models/{os.getpid()}/generator_model.h5')
