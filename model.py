@@ -220,22 +220,11 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
     # Delete the tape to free resources
     del tape
 
-    if i % 1 == 0:
-        summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, real_samples, metrics)
+    if i % 100 == 0:
+        summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, real_samples, metrics, i, epoch)
         condition_model.save(f'models/{job_id}/condition_model.h5')
         generator_model.save(f'models/{job_id}/generator_model.h5')
         critic_model.save(f'models/{job_id}/critic_model.h5')
-        # Plot the generated samples
-        plt.figure(figsize=(10, 5), tight_layout=True)
-        plt.plot(scaler.inverse_transform(generated_samples[0, :, 0]), label='Returns Ask')
-        plt.plot(scaler.inverse_transform(generated_samples[0, :, 1]), label='Returns Bid')
-        plt.xlabel('Time (Events)')
-        plt.title('Generated sample')
-        plt.legend()
-        plt.savefig(f'plots/{job_id}/generated_samples_{epoch}_{i}.png')
-        plt.savefig(f'plots/{job_id}/generated_samples_{epoch}_{i}.png')
-        plt.close()
-
     return condition_model, generator_model, critic_model
 
 def compute_critic_loss(real_output, fake_output):
@@ -299,7 +288,7 @@ def wasserstein_loss(predictions):
         w_tot = -backend.mean(fake_output*fake_labels)
     return w_tot
 
-def summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, real_samples, metrics):
+def summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, real_samples, metrics, i, epoch):
     '''Summarize the performance of the GAN.
     
     Parameters
@@ -320,6 +309,10 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
     Returns
     -------
     None'''
+
+    generated_samples = generated_samples[0,:,:].numpy()
+    real_samples = real_samples[0,:,:].numpy()
+    features = ['Returns Ask', 'Returns Bid', 'Imbalance', 'Spread', 'Volatility Ask', 'Volatility Bid']
 
     # add the metrics to the dictionary
     metrics['critic_loss'].append(critic_loss.numpy())
@@ -345,23 +338,23 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
     plt.legend()
     plt.savefig(f'plots/{job_id}/score.png')
 
-    # Plot the fake samples together with the real samples
-    plt.figure(figsize=(10, 5), tight_layout=True)
-    plt.plot(scaler.inverse_transform(generated_samples[0, :, :])[0], label='Return Ask')
-    plt.plot(scaler.inverse_transform(generated_samples[0, :, :])[1], label='Return Bid')
-    plt.xlabel('Time (Events)')
-    plt.title('Generated sample')
-    plt.legend()
-    plt.savefig(f'plots/{job_id}/generated_samples.png')
+    # Plot a chosen generated sample
+    fig, axes = plt.subplots(generated_samples.shape[1], 1, figsize=(10, 10), tight_layout=True)
+    for j, feature in zip(range(generated_samples.shape[1]), features):
+        axes[j].plot(scaler.inverse_transform(generated_samples.reshape(-1,generated_samples.shape[-1]).reshape(generated_samples.shape))[:, j], label=f'Generated {feature}')
+        axes[j].set_title(f'Generated {feature}')
+    axes[j].set_xlabel('Time (Events)')
+    plt.savefig(f'plots/{job_id}/generated_samples_{epoch}_{i}.png')
 
-    # Plot a randomly chosen real sample
-    plt.figure(figsize=(10, 5), tight_layout=True)
-    plt.plot(real_samples[0, :, 0], label='Return Ask')
-    plt.plot(real_samples[0, :, 1], label='Return Bid')
-    plt.xlabel('Time (Events)')
-    plt.title('Real sample')
-    plt.legend()
+    # Plot a chosen real sample
+    fig, axes = plt.subplots(real_samples.shape[1], 1, figsize=(10, 10), tight_layout=True)
+    for j, feature in zip(range(real_samples.shape[1]), features):
+        axes[j].plot(scaler.inverse_transform(real_samples.reshape(-1,real_samples.shape[-1]).reshape(real_samples.shape))[:, j])
+        axes[j].set_title(f'Real {feature}')
+    axes[j].set_xlabel('Time (Events)')
     plt.savefig(f'plots/{job_id}/real_samples.png')
+
+    plt.close('all')
 
     logging.info(f'Epoch: {epoch} | Batch: {i} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | <Score_r>: {real_output.numpy()[1,:].mean():.5f} | <Score_f>: {fake_output.numpy()[1,:].mean():.5f}\n')
     return None
