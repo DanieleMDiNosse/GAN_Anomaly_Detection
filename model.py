@@ -5,6 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from data_utils import *
+from joblib import dump, load
 # import psutil
 # import time
 # from metrics import return_distribution, volatility, bid_ask_spread
@@ -121,7 +122,7 @@ def build_critic(T_real, T_cond, num_features, disc_units):
     return critic_model
 
 # @tf.function
-def train_step(real_samples, conditions, condition_model, generator_model, critic_model, optimizer, T_cond, latent_dim, i, epoch, metrics):
+def train_step(real_samples, conditions, condition_model, generator_model, critic_model, optimizer, T_cond, latent_dim, i, epoch, metrics, scaler):
     '''Train the GAN for one batch.
     
     Parameters
@@ -191,14 +192,6 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
         for w in critic_model.trainable_weights:
             w.assign(tf.clip_by_value(w, -0.01, 0.01))
 
-        # Theoretically, weight clipping is a compromise. It's an attempt to enforce a complex mathematical
-        # property (Lipschitz continuity, necessary for the Kantorovich-Rubinstein duality to hold) through a 
-        # simple, computationally efficient operation (clipping). However, it's worth noting that more sophisticated 
-        # methods like gradient penalty and spectral normalization have been proposed in subsequent research 
-        # to enforce the Lipschitz condition more effectively.
-        for w in critic_model.trainable_weights:
-            w.assign(tf.clip_by_value(w, -0.01, 0.01))
-
     # Delete the tape to free resources
     del tape
 
@@ -227,37 +220,21 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
     # Delete the tape to free resources
     del tape
 
-    if i % 500 == 0:
-        summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, metrics)
+    if i % 1 == 0:
+        summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, real_samples, metrics)
         condition_model.save(f'models/{job_id}/condition_model.h5')
         generator_model.save(f'models/{job_id}/generator_model.h5')
         critic_model.save(f'models/{job_id}/critic_model.h5')
         # Plot the generated samples
         plt.figure(figsize=(10, 5), tight_layout=True)
-        plt.plot(generated_samples[0, :, 0], label='Returns Ask')
-        plt.plot(generated_samples[0, :, 1], label='Returns Bid')
+        plt.plot(scaler.inverse_transform(generated_samples[0, :, 0]), label='Returns Ask')
+        plt.plot(scaler.inverse_transform(generated_samples[0, :, 1]), label='Returns Bid')
         plt.xlabel('Time (Events)')
         plt.title('Generated sample')
         plt.legend()
         plt.savefig(f'plots/{job_id}/generated_samples_{epoch}_{i}.png')
         plt.savefig(f'plots/{job_id}/generated_samples_{epoch}_{i}.png')
         plt.close()
-    if i % 1000 == 0:
-        logging.info(f'Saving the generated samples. Update of stat metrics...')
-        np.save(f'generated_samples/{job_id}/generated_samples.npy', generated_samples)
-        # Load all the generated samples files that are in the generated_samples folder and stack them one after the other
-        generated_samples = np.vstack([np.load(f'generated_samples/{job_id}/{file}').reshape(generated_samples.shape[0]*generated_samples.shape[1], generated_samples.shape[2]) \
-                                       for file in os.listdir(f'generated_samples/{job_id}/')])
-        # print(generated_samples.shape)
-        # return_distribution(generated_samples)
-        # volatility(generated_samples)
-        # bid_ask_spread(generated_samples)
-        # plt.close()
-        # print(generated_samples.shape)
-        # return_distribution(generated_samples)
-        # volatility(generated_samples)
-        # bid_ask_spread(generated_samples)
-        # plt.close()
 
     return condition_model, generator_model, critic_model
 
@@ -322,7 +299,7 @@ def wasserstein_loss(predictions):
         w_tot = -backend.mean(fake_output*fake_labels)
     return w_tot
 
-def summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, metrics):
+def summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, real_samples, metrics):
     '''Summarize the performance of the GAN.
     
     Parameters
@@ -370,12 +347,21 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
 
     # Plot the fake samples together with the real samples
     plt.figure(figsize=(10, 5), tight_layout=True)
-    plt.plot(generated_samples[0, :, 0], label='Ask price')
-    plt.plot(generated_samples[0, :, 1], label='Ask volume')
+    plt.plot(scaler.inverse_transform(generated_samples[0, :, :])[0], label='Return Ask')
+    plt.plot(scaler.inverse_transform(generated_samples[0, :, :])[1], label='Return Bid')
     plt.xlabel('Time (Events)')
     plt.title('Generated sample')
     plt.legend()
     plt.savefig(f'plots/{job_id}/generated_samples.png')
+
+    # Plot a randomly chosen real sample
+    plt.figure(figsize=(10, 5), tight_layout=True)
+    plt.plot(real_samples[0, :, 0], label='Return Ask')
+    plt.plot(real_samples[0, :, 1], label='Return Bid')
+    plt.xlabel('Time (Events)')
+    plt.title('Real sample')
+    plt.legend()
+    plt.savefig(f'plots/{job_id}/real_samples.png')
 
     logging.info(f'Epoch: {epoch} | Batch: {i} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | <Score_r>: {real_output.numpy()[1,:].mean():.5f} | <Score_f>: {fake_output.numpy()[1,:].mean():.5f}\n')
     return None
@@ -444,6 +430,11 @@ if __name__ == '__main__':
         
         if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{day+1}.npy'):
             logging.info('\n---------- PREPROCESSING ----------')
+            # The purpose of this preprocessing step is to transform the data to have zero mean and unit variance
+            # When you use partial_fit, you don't have access to the entire dataset all at once, but you can still 
+            # calculate running estimates for mean and variance based on the data chunks you've seen so far. 
+            # This is often done using Welford's algorithm for numerical stability, or a similar online algorithm. 
+            # The running estimates are updated as each new chunk of data becomes available
             scaler = StandardScaler()
             try:
                 # Create a memmap to store the data. The first shape is the number of sample for each piece
@@ -475,7 +466,11 @@ if __name__ == '__main__':
                     start_idx = end_idx
                     del scaled_windows  # Explicit deletion
                 logging.info('Done.')
-                
+
+                logging.info('\nDump the scaler...')
+                dump(scaler, f'tmp/scaler_{stock}_{window_size}_{day+1}.joblib')
+                logging.info('Done.')
+
                 logging.info('\nSplit the data into train, validation and test sets...')
                 train, test = fp[:int(fp.shape[0]*0.75)], fp[int(fp.shape[0]*0.75):]
                 train, val = train[:int(train.shape[0]*0.75)], train[int(train.shape[0]*0.75):]
@@ -483,13 +478,6 @@ if __name__ == '__main__':
                 np.save(f'../data/val_{stock}_{window_size}_{day+1}.npy', val)
                 np.save(f'../data/test_{stock}_{window_size}_{day+1}.npy', test)
                 logging.info('Done.')
-
-                # # Explicitly close the memory-mapped file
-                # fp._mmap.close()
-                # # Explicitly delete the memory-mapped array
-                # del fp
-                # # # Optionally invoke the garbage collector
-                # # gc.collect()
 
                 logging.info('\nDivide the data into conditions and input...')
                 condition_train, input_train = divide_data_condition_input(train, condition_length)
@@ -521,8 +509,10 @@ if __name__ == '__main__':
             condition_val = np.load(f'../data/condition_val_{stock}_{window_size}_{day+1}.npy', mmap_mode='r')
             condition_test = np.load(f'../data/condition_test_{stock}_{window_size}_{day+1}.npy', mmap_mode='r')
             logging.info('Done.')
+            logging.info('Loading the scaler...')
+            scaler = load(f'tmp/scaler_{stock}_{window_size}_{day+1}.joblib')
+            logging.info('Done.')
 
-        logging.info(f'{type(input_train)}')
         # Folders creation
         os.mkdir(f'plots/{job_id}') # Model architecture plots, metrics plots
         os.mkdir(f'generated_samples/{job_id}') # Generated samples
@@ -572,7 +562,7 @@ if __name__ == '__main__':
                 j = 0
                 for batch_real_samples, batch_conditions in tqdm(dataset, desc=f'Epoch {epoch+1}/{n_epochs}'):
                     j += 1
-                    condition_model, generator_model, critic_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, j, epoch, metrics)
+                    condition_model, generator_model, critic_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, j, epoch, metrics, scaler)
             # save the models
             condition_model.save(f'models/{job_id}/condition_model.h5')
             generator_model.save(f'models/{job_id}/generator_model.h5')
@@ -590,7 +580,7 @@ if __name__ == '__main__':
             i = 0
             for batch_real_samples, batch_conditions in tqdm(dataset, desc=f'Epoch {epoch+1}/{n_epochs}'):
                 i += 1
-                condition_model, generator_model, critic_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, i, epoch, metrics)
+                condition_model, generator_model, critic_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, i, epoch, metrics, scaler)
         # save the models
         condition_model.save(f'models/{job_id}/condition_model.h5')
         generator_model.save(f'models/{job_id}/generator_model.h5')
