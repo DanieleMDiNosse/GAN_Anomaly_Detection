@@ -473,7 +473,7 @@ if __name__ == '__main__':
                 logging.info('Done.')
                 
                 logging.info('\nDump the scaler...')
-                dump(scaler, f'tmp/scaler_{stock}_{window_size}_{day+1}.joblib')
+                dump(scaler, f'tmp/scaler_{stock}_{window_size}_{day+1}_{piece_idx}.joblib')
                 logging.info('Done.')
 
                 logging.info('\nSplit the data into train, validation and test sets...')
@@ -571,7 +571,6 @@ if __name__ == '__main__':
 
             generator_model, condition_model = build_generator(T_condition, latent_dim, gen_units, T_real, n_features)
             critic_model = build_critic(T_real, T_condition, n_features, disc_units)
-            exit()
 
             # Define a dictionary to store the metrics
             metrics = {'critic_loss': [], 'gen_loss': [], 'real_score': [], 'fake_score': []}
