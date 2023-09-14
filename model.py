@@ -405,52 +405,56 @@ if __name__ == '__main__':
         for device in physical_devices:
             logging.info(f'\t{device}\n')
     
+    # Folders creation
+    os.mkdir(f'plots/{job_id}') # Model architecture plots, metrics plots
+    os.mkdir(f'generated_samples/{job_id}') # Generated samples
+    os.mkdir(f'models/{job_id}') # Models
+    
     # Read the features dataframes
     dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
     dataframes_paths = [path for path in dataframes_paths if 'features' in path]
     dataframes_paths.sort()
     dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths][:N]
 
-    window_size = 500
-    condition_length = int(window_size*0.8)
+    window_size = 1500
+    condition_length = int(window_size*0.75)
     input_length = window_size - condition_length
     n_features = dataframes[0].shape[1]
     for day in range(len(dataframes)):
         logging.info(f'##################### START DAY {day+1}/{len(dataframes)} #####################')
+
         data = dataframes[day].values
         # # Convert data entries into int32 to avoid memory issues
         # data = data.astype(np.int32)
         
         if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{day+1}.npy'):
             logging.info('\n---------- PREPROCESSING ----------')
-            # The purpose of this preprocessing step is to transform the data to have zero mean and unit variance
+            # The purpose of this preprocessing step is to transform the data to have zero mean and unit variance.
             # When you use partial_fit, you don't have access to the entire dataset all at once, but you can still 
             # calculate running estimates for mean and variance based on the data chunks you've seen so far. 
             # This is often done using Welford's algorithm for numerical stability, or a similar online algorithm. 
             # The running estimates are updated as each new chunk of data becomes available
             scaler = StandardScaler()
             try:
+                # Divide data in 10 pieces
+                sub_data = np.array_split(data, 10)
+
                 # Create a memmap to store the data. The first shape is the number of sample for each piece
                 # multiplied by the number of pieces.
                 final_shape = (2008536, window_size, n_features)
                 fp = np.memmap("final_data.dat", dtype='float32', mode='w+', shape=final_shape)
-                # Divide data in 10 pieces
-                sub_data = np.array_split(data, 10)
-                start_idx = 0
+
                 for i, v in enumerate(sub_data):
                     logging.info(f'Dividing the data into windows and memorize "sub" quantites - {i+1}/10')
                     # Each piece is divided into windows
                     windows = np.array(divide_into_windows(v, window_size))
+                    # The scaler is updated with the current piece
                     scaler.partial_fit(windows.reshape(-1, windows.shape[-1]))
-                    # np.save(f'tmp/windows_{i}.npy', windows)
-                    # # Using partial_fit, scaler learn incrementally the quantities needed for the scaling process. 
-                    # # This allows to scale the data without loading it all together in memory.
-                    # windows_mmap = np.load(f'tmp/windows_{i}.npy', mmap_mode='r')
-                    # scaler.partial_fit(windows_mmap.reshape(-1, windows_mmap.shape[-1]))
                     logging.info('Done.')
 
                 # Here the scaling is performed and the resulting scaled data is assign to the vector fp
                 logging.info('\nStart scaling...')
+                start_idx = 0
                 for i in range(10):
                     windows = np.array(divide_into_windows(v, window_size))
                     scaled_windows = scaler.transform(windows.reshape(-1, windows.shape[-1])).reshape(windows.shape)
@@ -459,7 +463,7 @@ if __name__ == '__main__':
                     start_idx = end_idx
                     del scaled_windows  # Explicit deletion
                 logging.info('Done.')
-
+                
                 logging.info('\nDump the scaler...')
                 dump(scaler, f'tmp/scaler_{stock}_{window_size}_{day+1}.joblib')
                 logging.info('Done.')
@@ -505,11 +509,6 @@ if __name__ == '__main__':
             logging.info('Loading the scaler...')
             scaler = load(f'tmp/scaler_{stock}_{window_size}_{day+1}.joblib')
             logging.info('Done.')
-
-        # Folders creation
-        os.mkdir(f'plots/{job_id}') # Model architecture plots, metrics plots
-        os.mkdir(f'generated_samples/{job_id}') # Generated samples
-        os.mkdir(f'models/{job_id}') # Models
 
         # Define the parameters of the GAN.
         # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
