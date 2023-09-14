@@ -9,8 +9,7 @@ import argparse
 import logging
 import numba as nb
 from tqdm import tqdm
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from multiprocessing import Pool
 
 
 def rename_files(folder_path):
@@ -177,6 +176,16 @@ def divide_data_condition_input(data, condition_size):
         condition.append(window[:condition_size, :])
         input_data.append(window[condition_size:, :])
 
+    return condition, input_data
+
+def parallel_divide_data(data, condition_size):
+    num_workers = 4
+    partial_size = len(data) // num_workers
+    with Pool(num_workers) as p:
+        results = p.starmap(divide_data_condition_input, [(data[i*partial_size : (i+1)*partial_size], condition_size) for i in range(num_workers)])
+    
+    condition = np.concatenate([result[0] for result in results])
+    input_data = np.concatenate([result[1] for result in results])
     return condition, input_data
 
 def sliding_windows_stat(data):

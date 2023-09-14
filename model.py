@@ -6,12 +6,9 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 from data_utils import *
 from joblib import dump, load
-# import psutil
-# import time
-# from metrics import return_distribution, volatility, bid_ask_spread
 import argparse
 import logging
-# from tensorflow.keras.utils import plot_model
+from tensorflow.keras.utils import plot_model
 import os
 import gc
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
@@ -57,8 +54,7 @@ def build_generator(T_cond, latent_dim, gen_units, T_real, num_features):
     output = TimeDistributed(dense_layer)(lstm)
     output = Dropout(0.2)(output)
     condition_model = Model(condition_input, output)
-    # condition_model.compile(optimizer='adam', loss='mean_squared_error')
-    # plot_model(condition_model, to_file=f'plots/{job_id}/condition_model_plot.png', show_shapes=True, show_layer_names=True)
+    plot_model(condition_model, to_file=f'plots/{job_id}/condition_model_plot.png', show_shapes=True, show_layer_names=True)
 
     # ----------------- GENERATOR -----------------
     hidden_units1 = gen_units[2]
@@ -72,9 +68,7 @@ def build_generator(T_cond, latent_dim, gen_units, T_real, num_features):
     dropout = Dropout(0.2)(dense)
     reshape = Reshape((T_real, num_features))(dropout)
     generator_model = Model([condition_input, noise_input], reshape)
-
-    # generator_model.compile(optimizer='adam', loss='mean_squared_error')
-    # plot_model(generator_model, to_file=f'plots/{job_id}/generator_model_plot.png', show_shapes=True, show_layer_names=True)
+    plot_model(generator_model, to_file=f'plots/{job_id}/generator_model_plot.png', show_shapes=True, show_layer_names=True)
     return generator_model, condition_model
 
 def build_critic(T_real, T_cond, num_features, disc_units):
@@ -117,7 +111,7 @@ def build_critic(T_real, T_cond, num_features, disc_units):
     output = Dense(1, activation='linear')(lstm)
 
     critic_model = Model([condition_input, input], output)
-    # plot_model(critic_model, to_file=f'plots/{job_id}/critic_model_plot.png', show_shapes=True, show_layer_names=True)
+    plot_model(critic_model, to_file=f'plots/{job_id}/critic_model_plot.png', show_shapes=True, show_layer_names=True)
 
     return critic_model
 
@@ -420,6 +414,7 @@ if __name__ == '__main__':
     condition_length = int(window_size*0.75)
     input_length = window_size - condition_length
     n_features = dataframes[0].shape[1]
+    num_pieces = 20
     for day in range(len(dataframes)):
         logging.info(f'##################### START DAY {day+1}/{len(dataframes)} #####################')
 
@@ -434,69 +429,101 @@ if __name__ == '__main__':
             # calculate running estimates for mean and variance based on the data chunks you've seen so far. 
             # This is often done using Welford's algorithm for numerical stability, or a similar online algorithm. 
             # The running estimates are updated as each new chunk of data becomes available
+
             scaler = StandardScaler()
-            try:
-                # Divide data in 10 pieces
-                sub_data = np.array_split(data, 10)
+            # Divide data in pieces
+            sub_data = np.array_split(data, num_pieces)
 
-                # Create a memmap to store the data. The first shape is the number of sample for each piece
-                # multiplied by the number of pieces.
-                final_shape = (2008536, window_size, n_features)
-                fp = np.memmap("final_data.dat", dtype='float32', mode='w+', shape=final_shape)
+            # Create a memmap to store the data. The first shape is the number of sample for each piece
+            # multiplied by the number of pieces.
+            final_shape = (2008536, window_size, n_features)
+            fp = np.memmap("final_data.dat", dtype='float32', mode='w+', shape=final_shape)
 
-                for i, v in enumerate(sub_data):
-                    logging.info(f'Dividing the data into windows and memorize "sub" quantites - {i+1}/10')
-                    # Each piece is divided into windows
-                    windows = np.array(divide_into_windows(v, window_size))
-                    # The scaler is updated with the current piece
-                    scaler.partial_fit(windows.reshape(-1, windows.shape[-1]))
-                    logging.info('Done.')
-
-                # Here the scaling is performed and the resulting scaled data is assign to the vector fp
-                logging.info('\nStart scaling...')
-                start_idx = 0
-                for i in range(10):
-                    windows = np.array(divide_into_windows(v, window_size))
-                    scaled_windows = scaler.transform(windows.reshape(-1, windows.shape[-1])).reshape(windows.shape)
-                    end_idx = start_idx + scaled_windows.shape[0]
-                    fp[start_idx:end_idx] = scaled_windows
-                    start_idx = end_idx
-                    del scaled_windows  # Explicit deletion
-                logging.info('Done.')
-                
-                logging.info('\nDump the scaler...')
-                dump(scaler, f'tmp/scaler_{stock}_{window_size}_{day+1}.joblib')
+            for i, v in enumerate(sub_data):
+                logging.info(f'Dividing the data into windows and memorize "sub" quantites - {i+1}/{num_pieces}')
+                # Each piece is divided into windows
+                windows = np.array(divide_into_windows(v, window_size))
+                # The scaler is updated with the current piece
+                scaler.partial_fit(windows.reshape(-1, windows.shape[-1]))
                 logging.info('Done.')
 
-                logging.info('\nSplit the data into train, validation and test sets...')
-                train, test = fp[:int(fp.shape[0]*0.75)], fp[int(fp.shape[0]*0.75):]
-                train, val = train[:int(train.shape[0]*0.75)], train[int(train.shape[0]*0.75):]
-                np.save(f'../data/train_{stock}_{window_size}_{day+1}.npy', train)
-                np.save(f'../data/val_{stock}_{window_size}_{day+1}.npy', val)
-                np.save(f'../data/test_{stock}_{window_size}_{day+1}.npy', test)
-                logging.info('Done.')
+            # Here the scaling is performed and the resulting scaled data is assign to the vector fp
+            logging.info('\nStart scaling...')
+            start_idx = 0
+            for i in range(num_pieces):
+                # windows = np.array(divide_into_windows(v, window_size))
+                scaled_windows = scaler.transform(windows.reshape(-1, windows.shape[-1])).reshape(windows.shape)
+                end_idx = start_idx + scaled_windows.shape[0]
+                fp[start_idx:end_idx] = scaled_windows
+                start_idx = end_idx
+                del scaled_windows  # Explicit deletion
+            logging.info('Done.')
+            
+            logging.info('\nDump the scaler...')
+            dump(scaler, f'tmp/scaler_{stock}_{window_size}_{day+1}.joblib')
+            logging.info('Done.')
 
-                logging.info('\nDivide the data into conditions and input...')
-                condition_train, input_train = divide_data_condition_input(train, condition_length)
-                condition_train, input_train = np.array(condition_train), np.array(input_train)
-                condition_val, input_val = divide_data_condition_input(val, condition_length)
-                condition_val, input_val = np.array(condition_val), np.array(input_val)
-                condition_test, input_test = divide_data_condition_input(test, condition_length)
-                condition_test, input_test = np.array(condition_test), np.array(input_test)
-                logging.info('Done.')
+            logging.info('\nSplit the data into train, validation and test sets...')
+            train, test = fp[:int(fp.shape[0]*0.75)], fp[int(fp.shape[0]*0.75):]
+            train, val = train[:int(train.shape[0]*0.75)], train[int(train.shape[0]*0.75):]
+            np.save(f'../data/train_{stock}_{window_size}_{day+1}.npy', train)
+            np.save(f'../data/val_{stock}_{window_size}_{day+1}.npy', val)
+            np.save(f'../data/test_{stock}_{window_size}_{day+1}.npy', test)
+            logging.info('Done.')
 
-                logging.info('\nSave all the preprocessed data...')
-                np.save(f'../data/condition_train_{stock}_{window_size}_{day+1}.npy', condition_train)
-                np.save(f'../data/condition_val_{stock}_{window_size}_{day+1}.npy', condition_val)
-                np.save(f'../data/condition_test_{stock}_{window_size}_{day+1}.npy', condition_test)
-                np.save(f'../data/input_train_{stock}_{window_size}_{day+1}.npy', input_train)
-                np.save(f'../data/input_val_{stock}_{window_size}_{day+1}.npy', input_val)
-                np.save(f'../data/input_test_{stock}_{window_size}_{day+1}.npy', input_test)
-                logging.info('Done.')
-                logging.info('\n---------- DONE ----------')
-            except Exception as e:
-                logging.error(f'Error: {e}')
-                exit()
+            logging.info('\nDivide the data into conditions and input...')
+            condition_train = np.memmap('condition_train.dat', dtype='float32', mode='w+', shape=(train.shape[0], condition_length, n_features))
+            input_train = np.memmap('input_train.dat', dtype='float32', mode='w+', shape=(train.shape[0], input_length, n_features))
+            sub_train = np.array_split(train, num_pieces)
+            start_idx = 0
+            for i, v in enumerate(sub_train):
+                logging.info(f'Dividing the train data into conditions and input - {i+1}/{num_pieces}')
+                condition, input = parallel_divide_data(v, condition_length)
+                end_idx = start_idx + condition.shape[0]
+                condition_train[start_idx:end_idx] = condition
+                input_train[start_idx:end_idx] = input
+                start_idx = end_idx
+                del condition, input
+            gc.collect()
+            
+            condition_val = np.memmap('condition_val.dat', dtype='float32', mode='w+', shape=(val.shape[0], condition_length, n_features))
+            input_val = np.memmap('input_val.dat', dtype='float32', mode='w+', shape=(val.shape[0], input_length, n_features))
+            sub_val = np.array_split(val, num_pieces)
+            start_idx = 0
+            for i, v in enumerate(sub_val):
+                logging.info(f'Dividing the validation data into conditions and input - {i+1}/{num_pieces}')
+                condition, input = parallel_divide_data(v, condition_length)
+                end_idx = start_idx + condition.shape[0]
+                condition_val[start_idx:end_idx] = condition
+                input_val[start_idx:end_idx] = input
+                start_idx = end_idx
+                del condition, input
+            gc.collect()
+
+            condition_test = np.memmap('condition_test.dat', dtype='float32', mode='w+', shape=(test.shape[0], condition_length, n_features))
+            input_test = np.memmap('input_test.dat', dtype='float32', mode='w+', shape=(test.shape[0], input_length, n_features))
+            sub_test = np.array_split(test, num_pieces)
+            start_idx = 0
+            for i, v in enumerate(sub_test):
+                logging.info(f'Dividing the test data into conditions and input - {i+1}/{num_pieces}')
+                condition, input = parallel_divide_data(v, condition_length)
+                end_idx = start_idx + condition.shape[0]
+                condition_test[start_idx:end_idx] = condition
+                input_test[start_idx:end_idx] = input
+                start_idx = end_idx
+                del condition, input
+            logging.info('Done.')
+            gc.collect()
+
+            logging.info('\nSave all the preprocessed data...')
+            np.save(f'../data/condition_train_{stock}_{window_size}_{day+1}.npy', condition_train)
+            np.save(f'../data/condition_val_{stock}_{window_size}_{day+1}.npy', condition_val)
+            np.save(f'../data/condition_test_{stock}_{window_size}_{day+1}.npy', condition_test)
+            np.save(f'../data/input_train_{stock}_{window_size}_{day+1}.npy', input_train)
+            np.save(f'../data/input_val_{stock}_{window_size}_{day+1}.npy', input_val)
+            np.save(f'../data/input_test_{stock}_{window_size}_{day+1}.npy', input_test)
+            logging.info('Done.')
+            logging.info('\n---------- DONE ----------')
         else:
             logging.info('Loading train, validation and test sets...')
             input_train = np.load(f'../data/input_train_{stock}_{window_size}_{day+1}.npy', mmap_mode='r')
@@ -531,6 +558,7 @@ if __name__ == '__main__':
 
         generator_model, condition_model = build_generator(T_condition, latent_dim, gen_units, T_real, n_features)
         critic_model = build_critic(T_real, T_condition, n_features, disc_units)
+        exit()
 
         # Define a dictionary to store the metrics
         metrics = {'critic_loss': [], 'gen_loss': [], 'real_score': [], 'fake_score': []}
