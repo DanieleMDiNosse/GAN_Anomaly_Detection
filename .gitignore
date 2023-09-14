@@ -178,3 +178,6 @@ cython_debug/
 
 # Data
 *.dat
+
+# joblib files
+*.joblib
