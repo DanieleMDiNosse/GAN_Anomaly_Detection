@@ -1,12 +1,12 @@
-name: dmdn
+name: dmdn0
 channels:
   - conda-forge
 dependencies:
-  - python=3.9
+  - python
   - pandas
-  - cudatoolkit=11.7.0 
-  - cudnn=8.4.1 
-  - tensorflow-gpu=2.6.2
+  - cudatoolkit
+  - cudnn
+  - tensorflow-gpu
   - tqdm
   - pyarrow
   - statsmodels
