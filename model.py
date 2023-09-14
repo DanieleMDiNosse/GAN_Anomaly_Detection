@@ -368,7 +368,11 @@ if __name__ == '__main__':
               'warning': logging.WARNING,
               'info': logging.INFO,
               'debug': logging.DEBUG}
-    job_id = os.getenv("PBS_JOBID")
+    if os.getenv("PBS_JOBID") != None:
+        job_id = os.getenv("PBS_JOBID")
+    else:
+        job_id = os.getpid()
+
     logging.basicConfig(filename=f'output_{job_id}.log', format='%(message)s', level=levels[args.log])
 
     logger = tf.get_logger()
@@ -414,195 +418,205 @@ if __name__ == '__main__':
     condition_length = int(window_size*0.75)
     input_length = window_size - condition_length
     n_features = dataframes[0].shape[1]
-    num_pieces = 20
+    num_pieces = 5
+
     for day in range(len(dataframes)):
-        logging.info(f'##################### START DAY {day+1}/{len(dataframes)} #####################')
+        logging.info(f'######################### START DAY {day+1}/{len(dataframes)} #########################')
 
         data = dataframes[day].values
-        # # Convert data entries into int32 to avoid memory issues
-        # data = data.astype(np.int32)
-        
-        if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{day+1}.npy'):
-            logging.info('\n---------- PREPROCESSING ----------')
-            # The purpose of this preprocessing step is to transform the data to have zero mean and unit variance.
-            # When you use partial_fit, you don't have access to the entire dataset all at once, but you can still 
-            # calculate running estimates for mean and variance based on the data chunks you've seen so far. 
-            # This is often done using Welford's algorithm for numerical stability, or a similar online algorithm. 
-            # The running estimates are updated as each new chunk of data becomes available
+        # Divide data in pieces
+        print(data.shape)
+        sub_data = np.array_split(data, num_pieces)
+        for piece_idx, data in enumerate(sub_data):
+            logging.info(f'==================== START PIECE {piece_idx+1}/{num_pieces} ====================')
+            if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{day+1}_{piece_idx}.npy'):
+                logging.info('\n---------- PREPROCESSING ----------')
+                # The purpose of this preprocessing step is to transform the data to have zero mean and unit variance.
+                # When you use partial_fit, you don't have access to the entire dataset all at once, but you can still 
+                # calculate running estimates for mean and variance based on the data chunks you've seen so far. 
+                # This is often done using Welford's algorithm for numerical stability, or a similar online algorithm. 
+                # The running estimates are updated as each new chunk of data becomes available
 
-            scaler = StandardScaler()
-            # Divide data in pieces
-            sub_data = np.array_split(data, num_pieces)
+                scaler = StandardScaler()
+                # Divide data in pieces again
+                sub_data = np.array_split(data, num_pieces)
 
-            # Create a memmap to store the data. The first shape is the number of sample for each piece
-            # multiplied by the number of pieces.
-            final_shape = (2008536, window_size, n_features)
-            fp = np.memmap("final_data.dat", dtype='float32', mode='w+', shape=final_shape)
+                if sub_data[-1].shape[0] < window_size:
+                     raise ValueError(f'The last piece has shape {sub_data[-1].shape} and it is smaller than the window size {window_size}.')
 
-            for i, v in enumerate(sub_data):
-                logging.info(f'Dividing the data into windows and memorize "sub" quantites - {i+1}/{num_pieces}')
-                # Each piece is divided into windows
-                windows = np.array(divide_into_windows(v, window_size))
-                # The scaler is updated with the current piece
-                scaler.partial_fit(windows.reshape(-1, windows.shape[-1]))
+                num_windows = 0
+                for i, v in enumerate(sub_data):
+                    logging.info(f'Dividing the data into windows and memorize "sub" quantites - {i+1}/{num_pieces}')
+                    # Each piece is divided into windows
+                    windows = np.array(divide_into_windows(v, window_size))
+                    num_windows += windows.shape[0]
+                    # The scaler is updated with the current piece
+                    scaler.partial_fit(windows.reshape(-1, windows.shape[-1]))
+                    logging.info('Done.')
+                print(f'Total number of windows: {num_windows}')
+                logging.info(f'Total number of windows: {num_windows}')
+
+                # Create a memmap to store the data. The first shape is the number of windows (samples) for each piece
+                # multiplied by the number of pieces.
+                final_shape = (num_windows, window_size, n_features)
+                fp = np.memmap("final_data.dat", dtype='float32', mode='w+', shape=final_shape)
+
+                # Here the scaling is performed and the resulting scaled data is assign to the vector fp
+                logging.info('\nStart scaling...')
+                start_idx = 0
+                for i in range(num_pieces):
+                    scaled_windows = scaler.transform(windows.reshape(-1, windows.shape[-1])).reshape(windows.shape)
+                    end_idx = start_idx + scaled_windows.shape[0]
+                    fp[start_idx:end_idx] = scaled_windows
+                    start_idx = end_idx
+                    del scaled_windows  # Explicit deletion
+                logging.info('Done.')
+                
+                logging.info('\nDump the scaler...')
+                dump(scaler, f'tmp/scaler_{stock}_{window_size}_{day+1}.joblib')
                 logging.info('Done.')
 
-            # Here the scaling is performed and the resulting scaled data is assign to the vector fp
-            logging.info('\nStart scaling...')
-            start_idx = 0
-            for i in range(num_pieces):
-                # windows = np.array(divide_into_windows(v, window_size))
-                scaled_windows = scaler.transform(windows.reshape(-1, windows.shape[-1])).reshape(windows.shape)
-                end_idx = start_idx + scaled_windows.shape[0]
-                fp[start_idx:end_idx] = scaled_windows
-                start_idx = end_idx
-                del scaled_windows  # Explicit deletion
-            logging.info('Done.')
-            
-            logging.info('\nDump the scaler...')
-            dump(scaler, f'tmp/scaler_{stock}_{window_size}_{day+1}.joblib')
-            logging.info('Done.')
+                logging.info('\nSplit the data into train, validation and test sets...')
+                train, test = fp[:int(fp.shape[0]*0.75)], fp[int(fp.shape[0]*0.75):]
+                train, val = train[:int(train.shape[0]*0.75)], train[int(train.shape[0]*0.75):]
+                np.save(f'../data/train_{stock}_{window_size}_{day+1}.npy', train)
+                np.save(f'../data/val_{stock}_{window_size}_{day+1}.npy', val)
+                np.save(f'../data/test_{stock}_{window_size}_{day+1}.npy', test)
+                logging.info('Done.')
 
-            logging.info('\nSplit the data into train, validation and test sets...')
-            train, test = fp[:int(fp.shape[0]*0.75)], fp[int(fp.shape[0]*0.75):]
-            train, val = train[:int(train.shape[0]*0.75)], train[int(train.shape[0]*0.75):]
-            np.save(f'../data/train_{stock}_{window_size}_{day+1}.npy', train)
-            np.save(f'../data/val_{stock}_{window_size}_{day+1}.npy', val)
-            np.save(f'../data/test_{stock}_{window_size}_{day+1}.npy', test)
-            logging.info('Done.')
+                logging.info('\nDivide the data into conditions and input...')
+                condition_train = np.memmap('condition_train.dat', dtype='float32', mode='w+', shape=(train.shape[0], condition_length, n_features))
+                input_train = np.memmap('input_train.dat', dtype='float32', mode='w+', shape=(train.shape[0], input_length, n_features))
+                sub_train = np.array_split(train, num_pieces)
+                start_idx = 0
+                for i, v in enumerate(sub_train):
+                    logging.info(f'Dividing the train data into conditions and input - {i+1}/{num_pieces}')
+                    condition, input = parallel_divide_data(v, condition_length)
+                    end_idx = start_idx + condition.shape[0]
+                    condition_train[start_idx:end_idx] = condition
+                    input_train[start_idx:end_idx] = input
+                    start_idx = end_idx
+                    del condition, input
+                gc.collect()
+                
+                condition_val = np.memmap('condition_val.dat', dtype='float32', mode='w+', shape=(val.shape[0], condition_length, n_features))
+                input_val = np.memmap('input_val.dat', dtype='float32', mode='w+', shape=(val.shape[0], input_length, n_features))
+                sub_val = np.array_split(val, num_pieces)
+                start_idx = 0
+                for i, v in enumerate(sub_val):
+                    logging.info(f'Dividing the validation data into conditions and input - {i+1}/{num_pieces}')
+                    condition, input = parallel_divide_data(v, condition_length)
+                    end_idx = start_idx + condition.shape[0]
+                    condition_val[start_idx:end_idx] = condition
+                    input_val[start_idx:end_idx] = input
+                    start_idx = end_idx
+                    del condition, input
+                gc.collect()
 
-            logging.info('\nDivide the data into conditions and input...')
-            condition_train = np.memmap('condition_train.dat', dtype='float32', mode='w+', shape=(train.shape[0], condition_length, n_features))
-            input_train = np.memmap('input_train.dat', dtype='float32', mode='w+', shape=(train.shape[0], input_length, n_features))
-            sub_train = np.array_split(train, num_pieces)
-            start_idx = 0
-            for i, v in enumerate(sub_train):
-                logging.info(f'Dividing the train data into conditions and input - {i+1}/{num_pieces}')
-                condition, input = parallel_divide_data(v, condition_length)
-                end_idx = start_idx + condition.shape[0]
-                condition_train[start_idx:end_idx] = condition
-                input_train[start_idx:end_idx] = input
-                start_idx = end_idx
-                del condition, input
-            gc.collect()
-            
-            condition_val = np.memmap('condition_val.dat', dtype='float32', mode='w+', shape=(val.shape[0], condition_length, n_features))
-            input_val = np.memmap('input_val.dat', dtype='float32', mode='w+', shape=(val.shape[0], input_length, n_features))
-            sub_val = np.array_split(val, num_pieces)
-            start_idx = 0
-            for i, v in enumerate(sub_val):
-                logging.info(f'Dividing the validation data into conditions and input - {i+1}/{num_pieces}')
-                condition, input = parallel_divide_data(v, condition_length)
-                end_idx = start_idx + condition.shape[0]
-                condition_val[start_idx:end_idx] = condition
-                input_val[start_idx:end_idx] = input
-                start_idx = end_idx
-                del condition, input
-            gc.collect()
+                condition_test = np.memmap('condition_test.dat', dtype='float32', mode='w+', shape=(test.shape[0], condition_length, n_features))
+                input_test = np.memmap('input_test.dat', dtype='float32', mode='w+', shape=(test.shape[0], input_length, n_features))
+                sub_test = np.array_split(test, num_pieces)
+                start_idx = 0
+                for i, v in enumerate(sub_test):
+                    logging.info(f'Dividing the test data into conditions and input - {i+1}/{num_pieces}')
+                    condition, input = parallel_divide_data(v, condition_length)
+                    end_idx = start_idx + condition.shape[0]
+                    condition_test[start_idx:end_idx] = condition
+                    input_test[start_idx:end_idx] = input
+                    start_idx = end_idx
+                    del condition, input
+                logging.info('Done.')
+                gc.collect()
 
-            condition_test = np.memmap('condition_test.dat', dtype='float32', mode='w+', shape=(test.shape[0], condition_length, n_features))
-            input_test = np.memmap('input_test.dat', dtype='float32', mode='w+', shape=(test.shape[0], input_length, n_features))
-            sub_test = np.array_split(test, num_pieces)
-            start_idx = 0
-            for i, v in enumerate(sub_test):
-                logging.info(f'Dividing the test data into conditions and input - {i+1}/{num_pieces}')
-                condition, input = parallel_divide_data(v, condition_length)
-                end_idx = start_idx + condition.shape[0]
-                condition_test[start_idx:end_idx] = condition
-                input_test[start_idx:end_idx] = input
-                start_idx = end_idx
-                del condition, input
-            logging.info('Done.')
-            gc.collect()
+                logging.info('\nSave all the preprocessed data...')
+                np.save(f'../data/condition_train_{stock}_{window_size}_{day+1}_{piece_idx}.npy', condition_train)
+                np.save(f'../data/condition_val_{stock}_{window_size}_{day+1}_{piece_idx}.npy', condition_val)
+                np.save(f'../data/condition_test_{stock}_{window_size}_{day+1}_{piece_idx}.npy', condition_test)
+                np.save(f'../data/input_train_{stock}_{window_size}_{day+1}_{piece_idx}.npy', input_train)
+                np.save(f'../data/input_val_{stock}_{window_size}_{day+1}_{piece_idx}.npy', input_val)
+                np.save(f'../data/input_test_{stock}_{window_size}_{day+1}_{piece_idx}.npy', input_test)
+                logging.info('Done.')
+                logging.info('\n---------- DONE ----------')
+            else:
+                logging.info('Loading train, validation and test sets...')
+                input_train = np.load(f'../data/input_train_{stock}_{window_size}_{day+1}_{piece_idx}.npy', mmap_mode='r')
+                input_val = np.load(f'../data/input_val_{stock}_{window_size}_{day+1}_{piece_idx}.npy', mmap_mode='r')
+                input_test = np.load(f'../data/input_test_{stock}_{window_size}_{day+1}_{piece_idx}.npy', mmap_mode='r')
+                condition_train = np.load(f'../data/condition_train_{stock}_{window_size}_{day+1}_{piece_idx}.npy', mmap_mode='r')
+                condition_val = np.load(f'../data/condition_val_{stock}_{window_size}_{day+1}_{piece_idx}.npy', mmap_mode='r')
+                condition_test = np.load(f'../data/condition_test_{stock}_{window_size}_{day+1}_{piece_idx}.npy', mmap_mode='r')
+                logging.info('Done.')
+                logging.info('Loading the scaler...')
+                scaler = load(f'tmp/scaler_{stock}_{window_size}_{day+1}_{piece_idx}.joblib')
+                logging.info('Done.')
 
-            logging.info('\nSave all the preprocessed data...')
-            np.save(f'../data/condition_train_{stock}_{window_size}_{day+1}.npy', condition_train)
-            np.save(f'../data/condition_val_{stock}_{window_size}_{day+1}.npy', condition_val)
-            np.save(f'../data/condition_test_{stock}_{window_size}_{day+1}.npy', condition_test)
-            np.save(f'../data/input_train_{stock}_{window_size}_{day+1}.npy', input_train)
-            np.save(f'../data/input_val_{stock}_{window_size}_{day+1}.npy', input_val)
-            np.save(f'../data/input_test_{stock}_{window_size}_{day+1}.npy', input_test)
-            logging.info('Done.')
-            logging.info('\n---------- DONE ----------')
-        else:
-            logging.info('Loading train, validation and test sets...')
-            input_train = np.load(f'../data/input_train_{stock}_{window_size}_{day+1}.npy', mmap_mode='r')
-            input_val = np.load(f'../data/input_val_{stock}_{window_size}_{day+1}.npy', mmap_mode='r')
-            input_test = np.load(f'../data/input_test_{stock}_{window_size}_{day+1}.npy', mmap_mode='r')
-            condition_train = np.load(f'../data/condition_train_{stock}_{window_size}_{day+1}.npy', mmap_mode='r')
-            condition_val = np.load(f'../data/condition_val_{stock}_{window_size}_{day+1}.npy', mmap_mode='r')
-            condition_test = np.load(f'../data/condition_test_{stock}_{window_size}_{day+1}.npy', mmap_mode='r')
-            logging.info('Done.')
-            logging.info('Loading the scaler...')
-            scaler = load(f'tmp/scaler_{stock}_{window_size}_{day+1}.joblib')
-            logging.info('Done.')
+            # Define the parameters of the GAN.
+            # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
+            latent_dim = 100
+            n_epochs = 100
+            T_condition = condition_train.shape[1]
+            T_real = input_train.shape[1]
+            n_units_generator = 100
+            batch_size = 64
+            gen_units = [5, 64, 64]
+            disc_units = [gen_units[0], 64, 64]
 
-        # Define the parameters of the GAN.
-        # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
-        latent_dim = 100
-        n_epochs = 100
-        T_condition = condition_train.shape[1]
-        T_real = input_train.shape[1]
-        n_units_generator = 100
-        batch_size = 64
-        gen_units = [5, 64, 64]
-        disc_units = [gen_units[0], 64, 64]
+            # Use logging.info to print all the hyperparameters
+            logging.info(f'HYPERPARAMETERS:\n\tlatent_dim: {latent_dim}\n\tn_epochs: {n_epochs}\n\tT_condition: {T_condition}\n\tT_real: {T_real}\n\tFeatures: {dataframes[day].columns}\n\tbatch_size: {batch_size}')
 
-        # Use logging.info to print all the hyperparameters
-        logging.info(f'HYPERPARAMETERS:\n\tlatent_dim: {latent_dim}\n\tn_epochs: {n_epochs}\n\tT_condition: {T_condition}\n\tT_real: {T_real}\n\tFeatures: {dataframes[day].columns}\n\tbatch_size: {batch_size}')
+            conditioner_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
+            generator_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
+            critic_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
+            optimizer = [conditioner_optimizer, generator_optimizer, critic_optimizer]
 
-        conditioner_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
-        generator_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
-        critic_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
-        optimizer = [conditioner_optimizer, generator_optimizer, critic_optimizer]
+            generator_model, condition_model = build_generator(T_condition, latent_dim, gen_units, T_real, n_features)
+            critic_model = build_critic(T_real, T_condition, n_features, disc_units)
+            exit()
 
-        generator_model, condition_model = build_generator(T_condition, latent_dim, gen_units, T_real, n_features)
-        critic_model = build_critic(T_real, T_condition, n_features, disc_units)
-        exit()
+            # Define a dictionary to store the metrics
+            metrics = {'critic_loss': [], 'gen_loss': [], 'real_score': [], 'fake_score': []}
 
-        # Define a dictionary to store the metrics
-        metrics = {'critic_loss': [], 'gen_loss': [], 'real_score': [], 'fake_score': []}
+            # Train the GAN. When I load the data, I use the argument mmap_mode='r' to avoid to load the data in memory.
+            # This is because the data is too big to fit in memory. This means that the data is loaded in memory only when
+            # when it is needed.
+            num_subvectors = 5
+            slice = int(input_train.shape[0] / num_subvectors)
+            for i in range(num_subvectors):
+                logging.info(f'---------- Training on piece {i} ----------')
+                input_train = input_train[i*slice: (i+1)*slice]
+                condition_train = condition_train[i*slice: (i+1)*slice]
+                dataset = tf.data.Dataset.from_tensor_slices((input_train, condition_train)).batch(batch_size)
+                if i > 0 or piece_idx > 0:
+                    # Load the models of the previous training (previous piece)
+                    condition_model = tf.keras.models.load_model(f'models/{job_id}/condition_model.h5')
+                    generator_model = tf.keras.models.load_model(f'models/{job_id}/generator_model.h5')
+                    critic_model = tf.keras.models.load_model(f'models/{job_id}/critic_model.h5')
+                for epoch in range(n_epochs):
+                    j = 0
+                    for batch_real_samples, batch_conditions in tqdm(dataset, desc=f'Epoch {epoch+1}/{n_epochs}'):
+                        j += 1
+                        condition_model, generator_model, critic_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, j, epoch, metrics, scaler)
+                # save the models
+                condition_model.save(f'models/{job_id}/condition_model.h5')
+                generator_model.save(f'models/{job_id}/generator_model.h5')
+                critic_model.save(f'models/{job_id}/critic_model.h5')
 
-        # Train the GAN. When I load the data, I use the argument mmap_mode='r' to avoid to load the data in memory.
-        # This is because the data is too big to fit in memory. This means that the data is loaded in memory only when
-        # when it is needed.
-        num_subvectors = 5
-        slice = int(input_train.shape[0] / num_subvectors)
-        for i in range(num_subvectors):
-            logging.info(f'---------- Training on piece {i} ----------')
-            input_train = input_train[i*slice: (i+1)*slice]
-            condition_train = condition_train[i*slice: (i+1)*slice]
+            # Remeber to handle the last piece
+            logging.info(f'---------- Training on the LAST piece ----------')
+            input_train = input_train[(i+1)*slice:]
+            condition_train = condition_train[(i+1)*slice:]
             dataset = tf.data.Dataset.from_tensor_slices((input_train, condition_train)).batch(batch_size)
-            if i > 0:
-                # Load the models of the previous training (previous piece)
-                condition_model = tf.keras.models.load_model(f'models/{job_id}/condition_model.h5')
-                generator_model = tf.keras.models.load_model(f'models/{job_id}/generator_model.h5')
-                critic_model = tf.keras.models.load_model(f'models/{job_id}/critic_model.h5')
+            condition_model = tf.keras.models.load_model(f'models/{job_id}/condition_model.h5')
+            generator_model = tf.keras.models.load_model(f'models/{job_id}/generator_model.h5')
+            critic_model = tf.keras.models.load_model(f'models/{job_id}/critic_model.h5')
             for epoch in range(n_epochs):
-                j = 0
+                i = 0
                 for batch_real_samples, batch_conditions in tqdm(dataset, desc=f'Epoch {epoch+1}/{n_epochs}'):
-                    j += 1
-                    condition_model, generator_model, critic_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, j, epoch, metrics, scaler)
+                    i += 1
+                    condition_model, generator_model, critic_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, i, epoch, metrics, scaler)
             # save the models
             condition_model.save(f'models/{job_id}/condition_model.h5')
             generator_model.save(f'models/{job_id}/generator_model.h5')
             critic_model.save(f'models/{job_id}/critic_model.h5')
-
-        # Remeber to handle the last piece
-        logging.info(f'---------- Training on the LAST piece ----------')
-        input_train = input_train[(i+1)*slice:]
-        condition_train = condition_train[(i+1)*slice:]
-        dataset = tf.data.Dataset.from_tensor_slices((input_train, condition_train)).batch(batch_size)
-        condition_model = tf.keras.models.load_model(f'models/{job_id}/condition_model.h5')
-        generator_model = tf.keras.models.load_model(f'models/{job_id}/generator_model.h5')
-        critic_model = tf.keras.models.load_model(f'models/{job_id}/critic_model.h5')
-        for epoch in range(n_epochs):
-            i = 0
-            for batch_real_samples, batch_conditions in tqdm(dataset, desc=f'Epoch {epoch+1}/{n_epochs}'):
-                i += 1
-                condition_model, generator_model, critic_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, critic_model, optimizer, T_condition, latent_dim, i, epoch, metrics, scaler)
-        # save the models
-        condition_model.save(f'models/{job_id}/condition_model.h5')
-        generator_model.save(f'models/{job_id}/generator_model.h5')
-        critic_model.save(f'models/{job_id}/critic_model.h5')
+            logging.info(f'==================== END PIECE {piece_idx+1}/{num_pieces} ====================')
         logging.info(f'##################### END DAY {day+1}/{len(dataframes)} #####################')
