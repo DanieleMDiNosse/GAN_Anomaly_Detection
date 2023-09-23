@@ -8,7 +8,7 @@ from data_utils import *
 from joblib import dump, load
 import argparse
 import logging
-from tensorflow.keras.utils import plot_model
+# from tensorflow.keras.utils import plot_model
 import os
 import gc
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
@@ -54,7 +54,7 @@ def build_generator(T_cond, latent_dim, gen_units, T_real, num_features):
     output = TimeDistributed(dense_layer)(lstm)
     output = Dropout(0.2)(output)
     condition_model = Model(condition_input, output)
-    plot_model(condition_model, to_file=f'plots/{job_id}/condition_model_plot.png', show_shapes=True, show_layer_names=True)
+    # plot_model(condition_model, to_file=f'plots/{job_id}/condition_model_plot.png', show_shapes=True, show_layer_names=True)
 
     # ----------------- GENERATOR -----------------
     hidden_units1 = gen_units[2]
@@ -68,7 +68,7 @@ def build_generator(T_cond, latent_dim, gen_units, T_real, num_features):
     dropout = Dropout(0.2)(dense)
     reshape = Reshape((T_real, num_features))(dropout)
     generator_model = Model([condition_input, noise_input], reshape)
-    plot_model(generator_model, to_file=f'plots/{job_id}/generator_model_plot.png', show_shapes=True, show_layer_names=True)
+    # plot_model(generator_model, to_file=f'plots/{job_id}/generator_model_plot.png', show_shapes=True, show_layer_names=True)
     return generator_model, condition_model
 
 def build_critic(T_real, T_cond, num_features, disc_units):
@@ -111,7 +111,7 @@ def build_critic(T_real, T_cond, num_features, disc_units):
     output = Dense(1, activation='linear')(lstm)
 
     critic_model = Model([condition_input, input], output)
-    plot_model(critic_model, to_file=f'plots/{job_id}/critic_model_plot.png', show_shapes=True, show_layer_names=True)
+    # plot_model(critic_model, to_file=f'plots/{job_id}/critic_model_plot.png', show_shapes=True, show_layer_names=True)
 
     return critic_model
 
@@ -156,13 +156,15 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
 
     # Create a GradientTape for the conditioner, generator, and critic.
     # GrandietTape collects all the operations that are executed inside it.
-    # Then this operations are used to compute the gradeints of the loss function with 
-    # respect to the trainable variables.
+    # Then this operations are used to compute the gradients of the loss function with 
+    # respect to the trainable variables. Remember that 'persistent=True' is needed
+    # iff you want to compute the gradients of the operations inside the tape more than once
+    # (for example wrt different losses)
 
     # Critic training
     # The critic is trained 5 times for each batch
     for _ in range(5):
-        with tf.GradientTape(persistent=True) as tape:
+        with tf.GradientTape(persistent=False) as tape:
             # Ensure the tape is watching the trainable variables of conditioner
             tape.watch(condition_model.trainable_variables)
             # Step 1: Use condition_model to preprocess conditions and get K values
@@ -181,7 +183,7 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
         # Theoretically, weight clipping is a compromise. It's an attempt to enforce a complex mathematical
         # property (Lipschitz continuity, necessary for the Kantorovich-Rubinstein duality to hold) through a 
         # simple, computationally efficient operation (clipping). However, it's worth noting that more sophisticated 
-        # methods like gradient penalty and spectral normalization have been proposed in subsequent research 
+        # methods like gradient penalty and spectral normalization have been proposed in research papers
         # to enforce the Lipschitz condition more effectively.
         for w in critic_model.trainable_weights:
             w.assign(tf.clip_by_value(w, -0.01, 0.01))
@@ -191,7 +193,7 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
 
     # Generator training
     noise = tf.random.normal([batch_real_samples.shape[0], T_cond, latent_dim])
-    with tf.GradientTape(persistent=True) as tape:
+    with tf.GradientTape(persistent=False) as tape:
         # Ensure the tape is watching the trainable variables of conditioner
         tape.watch(condition_model.trainable_variables)
         # Step 1: Use condition_model to preprocess conditions and get K values
@@ -214,7 +216,10 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
     # Delete the tape to free resources
     del tape
 
-    if i % 100 == 0:
+    if i % 5 == 0:
+        logging.info(f'Epoch: {epoch} | Batch: {i} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | <Score_r>: {real_output.numpy()[1,:].mean():.5f} | <Score_f>: {fake_output.numpy()[1,:].mean():.5f}\n')
+
+    if i % 5 == 0:
         summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, real_samples, metrics, i, epoch)
         condition_model.save(f'models/{job_id}/condition_model.h5')
         generator_model.save(f'models/{job_id}/generator_model.h5')
@@ -317,7 +322,7 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
         metrics['fake_score'].append(score)
 
     plt.figure(figsize=(10, 5), tight_layout=True)
-    plt.plot(metrics['critic_loss'], label='critic loss')
+    plt.plot(metrics['critic_loss'], label='Critic loss')
     plt.plot(metrics['gen_loss'], label='Generator loss')
     plt.xlabel('Batch x 10')
     plt.ylabel('Loss')
@@ -350,7 +355,7 @@ def summarize_performance(real_output, fake_output, critic_loss, gen_loss, gener
 
     plt.close('all')
 
-    logging.info(f'Epoch: {epoch} | Batch: {i} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | <Score_r>: {real_output.numpy()[1,:].mean():.5f} | <Score_f>: {fake_output.numpy()[1,:].mean():.5f}\n')
+    # logging.info(f'Epoch: {epoch} | Batch: {i} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | <Score_r>: {real_output.numpy()[1,:].mean():.5f} | <Score_f>: {fake_output.numpy()[1,:].mean():.5f}\n')
     return None
 
 if __name__ == '__main__':
@@ -393,6 +398,7 @@ if __name__ == '__main__':
         date = '2018-04-01_2018-04-30_5'
 
     N = args.N_days
+    logging.info(f'Number of days:\n\t{N}')
 
     physical_devices = tf.config.experimental.list_physical_devices('GPU')
     if len(physical_devices) == 0:
@@ -414,7 +420,7 @@ if __name__ == '__main__':
     dataframes_paths.sort()
     dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths][:N]
 
-    window_size = 1500
+    window_size = 1000
     condition_length = int(window_size*0.75)
     input_length = window_size - condition_length
     n_features = dataframes[0].shape[1]
@@ -562,7 +568,7 @@ if __name__ == '__main__':
             disc_units = [gen_units[0], 64, 64]
 
             # Use logging.info to print all the hyperparameters
-            logging.info(f'HYPERPARAMETERS:\n\tlatent_dim: {latent_dim}\n\tn_epochs: {n_epochs}\n\tT_condition: {T_condition}\n\tT_real: {T_real}\n\tFeatures: {dataframes[day].columns}\n\tbatch_size: {batch_size}')
+            logging.info(f'HYPERPARAMETERS:\n\tlatent_dim: {latent_dim}\n\tn_epochs: {n_epochs}\n\tT_condition: {T_condition}\n\tT_real: {T_real}\n\tFeatures: {dataframes[day].columns}\n\tbatch_size: {batch_size}\n\tnum_batches: {input_train.shape[0]//batch_size}')
 
             conditioner_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
             generator_optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.00005)
@@ -617,5 +623,5 @@ if __name__ == '__main__':
             condition_model.save(f'models/{job_id}/condition_model.h5')
             generator_model.save(f'models/{job_id}/generator_model.h5')
             critic_model.save(f'models/{job_id}/critic_model.h5')
-            logging.info(f'==================== END PIECE {piece_idx+1}/{num_pieces} ====================')
-        logging.info(f'##################### END DAY {day+1}/{len(dataframes)} #####################')
+            logging.info(f'==================== END PIECE {piece_idx+1}/{num_pieces} ====================\n')
+        logging.info(f'##################### END DAY {day+1}/{len(dataframes)} #####################\n')
