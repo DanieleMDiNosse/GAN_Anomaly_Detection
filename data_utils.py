@@ -79,17 +79,17 @@ def evaluate_imbalance(data, f):
     imbalance = v_b_summed.sum(axis=1) / (v_b_summed.sum(axis=1) + v_a_summed.sum(axis=1))
     return imbalance
 
-def rolling_volatility(p, f):
+def rolling_volatility(p, m):
     '''This function computes the rolling volatility of the ask prices up to a certain level.
-    It averages over a number of events equal to the sampling frequency.
+    It averages over a number of events equal to the m.
     The rolling volatility is defined as the standard deviation of the returns.
     
     Parameters
     ----------
     p_a : numpy array
         Ask prices.
-    f : int
-        Sampling frequency.
+    m : int
+        Size of the window.
     
     Returns
     -------
@@ -98,7 +98,7 @@ def rolling_volatility(p, f):
     
     returns = np.diff(p)
     returns = np.insert(returns, 0, 0)
-    rolling_volatility = np.array([returns[i:i+f].std() for i in range(0, returns.shape[0]-f)])
+    rolling_volatility = np.array([returns[i:i+m].std() for i in range(0, returns.shape[0]-m)])
     return rolling_volatility
 
 def evaluate_spread(p_b, p_a):
@@ -261,6 +261,45 @@ def fast_autocorrelation(x, alpha=0.05):
     lag_no_corr = np.where(r < alpha)[0][0]
 
     return r, lag_no_corr
+
+def preprocessing_message_df(message_df, m=1000):
+    # Drop columns Order ID
+    message_df = message_df.drop(columns=['Order ID'])
+    # Filter by Event type equal to 1,2,3 or 4
+    message_df = message_df[message_df['Event type'].isin([1,2,3,4])]
+    # Take the rows from the f-th one
+    message_df = message_df.iloc[m:]
+
+    return message_df, message_df.index
+
+@nb.jit(nopython=True)
+def divide_into_overlapping_pieces(data, overlap_size, num_pieces):
+    """
+    Divide a vector into a number of overlapping pieces.
+
+    Parameters
+    ----------
+    data : array_like
+        The data to be divided.
+    overlap_size : int
+        The number of overlapping samples between two consecutive pieces.
+    num_pieces : int
+        The number of pieces to divide the data into.
+    
+    Returns
+    -------
+    pieces : list of array_like
+        The divided pieces.
+    """
+    piece_size = int(len(data) / num_pieces + (1 - 1/num_pieces) * overlap_size)
+    pieces = []
+    for i in range(num_pieces):
+        start = i * (piece_size - overlap_size)
+        end = start + piece_size
+        if i == num_pieces - 1:
+            end = len(data)
+        pieces.append(data[start:end])
+    return pieces
 
 
 if __name__ == "__main__":
