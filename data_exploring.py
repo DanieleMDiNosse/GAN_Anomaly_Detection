@@ -39,6 +39,8 @@ elif stock == 'MSFT':
     date = '2018-04-01_2018-04-30_5'
     f = 38
 
+f = 1
+
 N = args.N_days
 levels = 12
 
@@ -46,6 +48,7 @@ levels = 12
 dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
 dataframes_paths = [path for path in dataframes_paths if 'orderbook' in path]
 dataframes_paths.sort()
+logging.info(f'First dataframe used: {dataframes_paths[0]}')
 dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths][:N]
 m = 1000
 
@@ -115,34 +118,33 @@ for day in range(N):
     logging.info(f'Dataframe:\n {df.head()}')
     # Save the dataframe
     df.to_parquet(f'../data/{stock}_{date}/features_{day}.parquet')
-    exit()
 
 
-    # Perform the Ljung-Box test on the features using lags equal to [100, 200, 300 ... 1000]
-    logging.info('Perform the Ljung-Box test on the features using lags equal to [100, 200, 300 ... 1000]...')
-    logging.info('H0 -> The data are not serially correlated')
-    logging.info('H1 -> The data are serially correlated')
-    lags = [1000*i for i in range(1, 31)]
-    features = ['Returns Ask', 'Returns Bid', 'Imbalance', 'Spread', 'Volatility Ask', 'Volatility Bid']
-    for f, i in zip(features, range(data.shape[1])):
-        logging.info(f'---------- Feature: {f} ----------')
-        result = acorr_ljungbox(data[:n,i], lags=lags)
-        for lag, p in zip(lags, result['lb_pvalue']):
-            if p < 0.05:
-                logging.info(f'{lag} | p-value: {p} | The null hypothesis is rejected (there is serial correlation).')
-            else:
-                logging.info(f'{lag} | p-value: {p} | The null hypothesis cannot be rejected (there is no serial correlation).')
-        logging.info('--------------------------------')
-    logging.info('Done.')
+    # # Perform the Ljung-Box test on the features using lags equal to [100, 200, 300 ... 1000]
+    # logging.info('Perform the Ljung-Box test on the features using lags equal to [100, 200, 300 ... 1000]...')
+    # logging.info('H0 -> The data are not serially correlated')
+    # logging.info('H1 -> The data are serially correlated')
+    # lags = [1000*i for i in range(1, 31)]
+    # features = ['Returns Ask', 'Returns Bid', 'Imbalance', 'Spread', 'Volatility Ask', 'Volatility Bid']
+    # for f, i in zip(features, range(data.shape[1])):
+    #     logging.info(f'---------- Feature: {f} ----------')
+    #     result = acorr_ljungbox(data[:n,i], lags=lags)
+    #     for lag, p in zip(lags, result['lb_pvalue']):
+    #         if p < 0.05:
+    #             logging.info(f'{lag} | p-value: {p} | The null hypothesis is rejected (there is serial correlation).')
+    #         else:
+    #             logging.info(f'{lag} | p-value: {p} | The null hypothesis cannot be rejected (there is no serial correlation).')
+    #     logging.info('--------------------------------')
+    # logging.info('Done.')
 
-    # Plot the autocorrelation of the features
-    logging.info('Plot the autocorrelation of the features...')
-    fig, axs = plt.subplots(6, 1, figsize=(10, 10), tight_layout=True)
-    for feature, i in zip(features,range(data.shape[1])):
-        plot_acf(data[:,i], lags=1500, ax=axs[i])
-        axs[i].set_title(f'Autocorrelation of {feature}')
-    plt.savefig('plots/autocorrelation.png')
-    logging.info('Done.')
+    # # Plot the autocorrelation of the features
+    # logging.info('Plot the autocorrelation of the features...')
+    # fig, axs = plt.subplots(6, 1, figsize=(10, 10), tight_layout=True)
+    # for feature, i in zip(features,range(data.shape[1])):
+    #     plot_acf(data[:,i], lags=1500, ax=axs[i])
+    #     axs[i].set_title(f'Autocorrelation of {feature}')
+    # plt.savefig('plots/autocorrelation.png')
+    # logging.info('Done.')
 
     # Perform the ADF test on the features
     # logging.info('Perform the ADF test on the features...')
