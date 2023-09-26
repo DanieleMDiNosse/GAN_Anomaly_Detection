@@ -285,7 +285,7 @@ def divide_into_overlapping_pieces(data, overlap_size, num_pieces):
         The number of overlapping samples between two consecutive pieces.
     num_pieces : int
         The number of pieces to divide the data into.
-    
+
     Returns
     -------
     pieces : list of array_like
