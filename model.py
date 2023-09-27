@@ -18,6 +18,35 @@ from tensorflow.keras.layers import Input, LSTM, Conv1D, Conv2D, Dense, Concaten
 from tensorflow.keras.models import Model
 from tensorflow.keras import backend
 
+def build_conditioner(T_cond, num_features_condition, cond_units):
+    '''Build the conditioner model. The conditioner takes as input the condition and outputs a vector of K values.
+    The condition is processed by a LSTM layer and the output of the LSTM layer is processed by a dense layer.
+    The conditioner is trained to extract the relevant information from the condition.
+    
+    Parameters
+    ----------
+    T_cond : int
+        Length of the condition.
+    num_features : int
+        Number of features of the condition.
+    cond_units : list
+        List of the number of hidden units for the LSTM layers.
+    
+    Returns
+    -------
+    conditioner_model : tensorflow.keras.Model
+        The conditioner model.'''
+    K, hidden_units0 = cond_units[0], cond_units[1]
+    condition_input = Input(shape=(T_cond, num_features_condition, 1))
+    x = Conv2D(filters=32, kernel_size=(5,num_features_condition), strides=(1,1), padding="same", activation=LeakyReLU(0.2))(condition_input)
+    x = BatchNormalization()(x)
+    x = Conv2D(filters=64, kernel_size=(5,num_features_condition), strides=(5,1), padding="same", activation=LeakyReLU(0.2))(x)
+    x = Flatten()(x)
+    x = Dense(K)(x)
+    output_cond = LeakyReLU(0.2)(x)
+    conditioner_model = Model(condition_input, output_cond, name="condition_model")
+    # plot_model(conditioner_model, to_file=f'plots/{job_id}/conditioner_model_plot.png', show_shapes=True, show_layer_names=True)
+    return conditioner_model
 
 def build_generator(T_cond, latent_dim, gen_units, T_real, num_features_condition, num_features_input):
     '''Build the generator model. The generator takes as input the condition and the noise and outputs a sample.
@@ -45,44 +74,47 @@ def build_generator(T_cond, latent_dim, gen_units, T_real, num_features_conditio
     condition_model : tensorflow.keras.Model
         The condition model.
     '''
-    # ----------------- CONDITIONER -----------------
-    K, hidden_units0 = gen_units[0], gen_units[1]
-    condition_input = Input(shape=(T_cond, num_features_condition, 1))
-    x = Conv2D(filters=32, kernel_size=(5,num_features_condition), strides=(1,1), padding="same", activation=LeakyReLU(0.2))(condition_input)
-    x = BatchNormalization()(x)
-    x = Conv2D(filters=64, kernel_size=(5,num_features_condition), strides=(5,1), padding="same", activation=LeakyReLU(0.2))(x)
-    x = Flatten()(x)
-    x = Dense(K)(x)
-    output_cond = LeakyReLU(0.2)(x)
-    # output = TimeDistributed(dense_layer)(lstm)
-    condition_model = Model(condition_input, output_cond, name="condition_model")
-    # plot_model(condition_model, to_file=f'plots/{job_id}/condition_model_plot.png', show_shapes=True, show_layer_names=True)
+    # # ----------------- CONDITIONER -----------------
+    # K, hidden_units0 = gen_units[0], gen_units[1]
+    # condition_input = Input(shape=(T_cond, num_features_condition, 1))
+    # x = Conv2D(filters=32, kernel_size=(5,num_features_condition), strides=(1,1), padding="same", activation=LeakyReLU(0.2))(condition_input)
+    # x = BatchNormalization()(x)
+    # x = Conv2D(filters=64, kernel_size=(5,num_features_condition), strides=(5,1), padding="same", activation=LeakyReLU(0.2))(x)
+    # x = Flatten()(x)
+    # x = Dense(K)(x)
+    # output_cond = LeakyReLU(0.2)(x)
+    # # output = TimeDistributed(dense_layer)(lstm)
+    # condition_model = Model(condition_input, output_cond, name="condition_model")
+    # # plot_model(condition_model, to_file=f'plots/{job_id}/condition_model_plot.png', show_shapes=True, show_layer_names=True)
 
     # ----------------- GENERATOR -----------------
+    K = gen_units[0]
     conv_units = gen_units[2]
     kernel_size = gen_units[3]
 
     condition_output = Input(shape=(K,))
-    print(condition_output.shape)
     noise_input = Input(shape=(latent_dim,))
-    print(noise_input.shape)
-    x = Concatenate(axis=-1)([condition_output, noise_input]) # (None, 100 + 5)
-    x = Dense(25*1*256)(x)
+    x = Concatenate(axis=-1)([condition_output, noise_input]) # (None, latent_dim + K)
+    x = Dense(25*5*256)(x)
+    x = BatchNormalization()(x)
     x = LeakyReLU(0.2)(x)
-    x = BatchNormalization()(x)
-    x = Reshape((25,1,256))(x)
+    x = Reshape((25,5,256))(x)
 
-    x = Conv2DTranspose(filters=128, kernel_size=(5,1), strides=(2,5), padding="same", activation=LeakyReLU(0.2))(x) # (None, 50, 5, 128)
+    # x = Conv2DTranspose(filters=128, kernel_size=(5,1), strides=(2,1), padding="same")(x) # (None, 50, 5, 128)
+    x = Conv2DTranspose(filters=128, kernel_size=(5,1), strides=(1,1), padding="same")(x) # (None, 25, 5, 128)
     x = BatchNormalization()(x)
-    x = Conv2DTranspose(filters=64, kernel_size=(5,1), strides=(5,1), padding="same", activation=LeakyReLU(0.2))(x) # (None, 250, 5, 64)
+    x = LeakyReLU(0.2)(x)
+    x = Conv2DTranspose(filters=64, kernel_size=(5,1), strides=(5,1), padding="same")(x) # (None, 250, 5, 64)
     x = BatchNormalization()(x)
+    x = LeakyReLU(0.2)(x)
 
     x = Conv2DTranspose(filters=1, kernel_size=(5,1), strides=(1,1), padding="same", activation='tanh')(x) # (None, 250, 5, 1)
-    output = Reshape((250,5))(x) # (None, 250, 5)
+    # output = Reshape((250,5))(x) # (None, 250, 5)
+    output = Reshape((125,5))(x) # (None, 250, 5)
 
     generator_model = Model([condition_output, noise_input], output, name="generator_model")
     # plot_model(generator_model, to_file=f'plots/{job_id}/generator_model_plot.png', show_shapes=True, show_layer_names=True)
-    return generator_model, condition_model
+    return generator_model
 
 def build_critic(T_real, T_cond, num_features_input, disc_units):
     '''Build the critic model. The critic takes as input the condition and the sample and outputs a real value.
@@ -110,23 +142,32 @@ def build_critic(T_real, T_cond, num_features_input, disc_units):
     # Input for the condition
     K, hidden_units0 = disc_units[0], disc_units[1]
     condition_input = Input(shape=(K,))
-    x = Dense(T_real*num_features_input)(condition_input)
-    x = LeakyReLU(0.2)(x)
-    input_cond = Reshape((T_real, num_features_input))(x)
 
     # Input for the real samples
     conv_units1 = disc_units[2]
     kernel_size = disc_units[3]
     input_real = Input(shape=(T_real, num_features_input)) # (None, T_real, num_features_input)
-    x = Concatenate(axis=-1)([input_cond, input_real]) # (None, T_real, num_features_input + num_features_input)
-    x = Reshape((T_real, num_features_input*2, 1))(x) # (None, T_real, num_features_input*2, 1)
+    x = Reshape((T_real, num_features_input, 1))(input_real) # (None, T_real, num_features_input, 1)
 
-    x = Conv2D(filters=32, kernel_size=(5,1), strides=(2,1), padding="same", activation=LeakyReLU(0.2))(x) # (None, 125, 10, 32)
-    x = Conv2D(filters=64, kernel_size=(5,1), strides=(5,2), padding="same", activation=LeakyReLU(0.2))(x) # (None, 25, 5, 64)
-    x = Conv2D(filters=128, kernel_size=(5,1), strides=(5,1), padding="same", activation=LeakyReLU(0.2))(x) # (None, 5, 5, 128)
+    # x = Conv2D(filters=32, kernel_size=(5,1), strides=(2,1), padding="same")(x) # (None, 125, 5, 32)
+    x = Conv2D(filters=32, kernel_size=(5,1), strides=(1,1), padding="same")(x) # (None, 125, 5, 32)
+    x = LeakyReLU(0.2)(x)
+    x = Dropout(0.3)(x)
+
+    x = Conv2D(filters=64, kernel_size=(5,1), strides=(5,1), padding="same")(x) # (None, 25, 10, 64)
+    x = LeakyReLU(0.2)(x)
+    x = Dropout(0.3)(x)
+
+    x = Conv2D(filters=128, kernel_size=(5,1), strides=(5,1), padding="same")(x) # (None, 5, 10, 128)
+    x = LeakyReLU(0.2)(x)
+    x = Dropout(0.3)(x)
 
     x = Flatten()(x) # (None, 10240)
-    output = Dense(1, activation='linear')(x) # Goal: high value for real samples, low value for fake samples
+    x = Dense(K)(x)
+    x = LeakyReLU(0.2)(x)
+
+    x = Concatenate(axis=-1)((x, condition_input))
+    output = Dense(1)(x) # Goal: high value for real samples, low value for fake samples
 
     critic_model = Model([condition_input, input_real], output, name='critic_model')
     # plot_model(critic_model, to_file=f'plots/{job_id}/critic_model_plot.png', show_shapes=True, show_layer_names=True)
@@ -177,8 +218,8 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
     # (for example wrt different losses)
 
     # Critic training
-    # The critic is trained 20 times for each batch
-    for i in range(20):
+    # The critic is trained multiple times for each batch
+    for i in range(5):
         # Initialize random noise
         noise = tf.random.normal([batch_size, latent_dim])
         with tf.GradientTape(persistent=True) as tape:
@@ -235,11 +276,18 @@ def train_step(real_samples, conditions, condition_model, generator_model, criti
     gradients_of_conditioner = tape.gradient([gen_loss, critic_loss], condition_model.trainable_variables)
     conditioner_optimizer.apply_gradients(zip(gradients_of_conditioner, condition_model.trainable_variables))
 
+    # Compute the global norm of the gradients
+    gen_grad_norm = tf.linalg.global_norm(gradients_of_generator)
+    critic_grad_norm = tf.linalg.global_norm(gradients_of_critic)
+    conditioner_grad_norm = tf.linalg.global_norm(gradients_of_conditioner)
+
     # Delete the tape to free resources
     del tape
 
     if j % 100 == 0:
-        logging.info(f'Epoch: {epoch} | Batch: {j}/{num_batches} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | <Score_r>: {real_output.numpy()[1,:].mean():.5f} | <Score_f>: {fake_output.numpy()[1,:].mean():.5f}')
+        logging.info(f'Epoch: {epoch} | Batch: {j}/{num_batches} | Disc loss: {critic_loss:.5f} | Gen loss: {gen_loss:.5f} | <Score_r>: {real_output.numpy()[1,:].mean():.5f}\
+                      | <Score_f>: {fake_output.numpy()[1,:].mean():.5f} | GP: {gp:.5f} | Gen grad norm: {gen_grad_norm:.5f} | Critic grad norm: {critic_grad_norm:.5f}\
+                        | Conditioner grad norm: {conditioner_grad_norm:.5f}')
 
     if j % 500 == 0:
         summarize_performance(real_output, fake_output, critic_loss, gen_loss, generated_samples, real_samples, metrics, j, epoch)
@@ -432,12 +480,12 @@ if __name__ == '__main__':
     for i in range(N):
         assert message_dfs[i].shape[0] == features_dfs[i].shape[0], f"The first shapes of message_dfs[{i}] and features_dfs[{i}] are not equal"
 
-    window_size = 1000
+    window_size = 500
     condition_length = int(window_size*0.75)
     input_length = window_size - condition_length
     n_features_input = message_dfs[0].shape[1]
     n_features_condition = features_dfs[0].shape[1]
-    num_pieces = 20
+    num_pieces = 10
 
     for day in range(N):
         logging.info(f'######################### START DAY {day+1}/{N} #########################')
@@ -568,16 +616,19 @@ if __name__ == '__main__':
             input_test = np.load(f'../data/input_test_{stock}_{window_size}_{day+1}.npy', mmap_mode='r')
             logging.info('Done.')
 
+
+
         # Define the parameters of the GAN.
         # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
-        latent_dim = 100
+        latent_dim = 200
         n_epochs = 100
         T_condition = condition_train.shape[1]
         T_real = input_train.shape[1]
         n_units_generator = 100
-        batch_size = 64
+        batch_size = 128
         # output condition, hidden units condition, filter dim, kernel size
-        gen_units = [5, 64, 5, 25]
+        gen_units = [20, 64, 5, 25]
+        cond_units = [20, 64, 5, 25]
         disc_units = [gen_units[0], 64, 5, 25]
 
         # Use logging.info to print all the hyperparameters
@@ -588,18 +639,17 @@ if __name__ == '__main__':
         critic_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001, beta_1=0.5, beta_2=0.9)
         optimizer = [conditioner_optimizer, generator_optimizer, critic_optimizer]
 
-        generator_model, condition_model = build_generator(T_condition, latent_dim, gen_units, T_real, n_features_condition, n_features_input)
+        condition_model = build_conditioner(T_condition, n_features_condition, cond_units)
+        generator_model = build_generator(T_condition, latent_dim, gen_units, T_real, n_features_condition, n_features_input)
         critic_model = build_critic(T_real, T_condition, n_features_input, disc_units)
 
         logging.info('\n[Model] ---------- MODEL SUMMARIES ----------')
-
         condition_model.summary(print_fn=logging.info)
         logging.info('\n')
         generator_model.summary(print_fn=logging.info)
         logging.info('\n')
         critic_model.summary(print_fn=logging.info)
         logging.info('[Model] ---------- DONE ----------\n')
-        # exit()
 
         # Define a dictionary to store the metrics
         metrics = {'critic_loss': [], 'gen_loss': [], 'real_score': [], 'fake_score': []}
