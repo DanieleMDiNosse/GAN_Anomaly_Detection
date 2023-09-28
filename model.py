@@ -88,25 +88,30 @@ def build_generator(T_cond, latent_dim, gen_units, T_real, num_features_conditio
 
     condition_output = Input(shape=(K,), name='condition_input_from_conditioner')
     noise_input = Input(shape=(latent_dim*T_real), name='noise_input')
-    x = Concatenate(axis=-1, name='concatenation')([condition_output, noise_input]) # (None, latent_dim + K)
+    x = Concatenate(axis=-1, name='concatenation')([condition_output, noise_input])
 
-    x = Dense(25*5*128, name='dense')(x)
+    x = Dense(T_real*5*5, name='1_dense')(x)
     x = BatchNormalization(name='1_batch_norm')(x)
     x = LeakyReLU(0.2)(x)
-    x = Reshape((25,5,128), name='1_reshape')(x)
 
-    # x = Conv2DTranspose(filters=128, kernel_size=(5,1), strides=(2,1), padding="same", name='1_conv2dtranspose')(x) # (None, 50, 5, 128)
-    x = Conv2DTranspose(filters=64, kernel_size=(5,1), strides=(1,1), padding="same", name='1_conv2dtranspose')(x) # (None, 25, 5, 128)
+    x = Dense(T_real*5*10, name='2_dense')(x)
     x = BatchNormalization(name='2_batch_norm')(x)
     x = LeakyReLU(0.2)(x)
 
-    x = Conv2DTranspose(filters=32, kernel_size=(5,1), strides=(5,1), padding="same", name='2_conv2dtranspose')(x) # (None, 250, 5, 64)
+    x = Dense(T_real*5*8, name='3_dense')(x)
     x = BatchNormalization(name='3_batch_norm')(x)
     x = LeakyReLU(0.2)(x)
+    x = Reshape((T_real,5,8), name='1_reshape')(x)
 
-    x = Conv2DTranspose(filters=1, kernel_size=(5,1), strides=(1,1), padding="same", activation='tanh', name='3_conv2dtranspose_output')(x) # (None, 250, 5, 1)
-    # output = Reshape((250,5))(x) # (None, 250, 5)
-    output = Reshape((125,5), name='2_reshape')(x) # (None, 125, 5)
+    x = Conv2D(filters=4, kernel_size=(5,1), strides=(1,1), padding="same", name='1_conv2d')(x)
+    x = BatchNormalization(name='4_batch_norm')(x)
+    x = LeakyReLU(0.2)(x)
+
+    x = Conv2D(filters=1, kernel_size=(5,1), strides=(1,1), padding="same", name='2_conv2d')(x)
+    x = BatchNormalization(name='5_batch_norm')(x)
+    x = LeakyReLU(0.2)(x)
+
+    output = Reshape((T_real,5), name='2_reshape')(x)
 
     generator_model = Model([condition_output, noise_input], output, name="generator_model")
     return generator_model
@@ -240,7 +245,7 @@ def train_step(real_samples, conditions, condition_model, generator_model, discr
     del tape
 
     # Generator training
-    for _ in range(50):
+    for _ in range(5):
         noise = tf.random.normal([batch_size, latent_dim*T_real])
         with tf.GradientTape(persistent=True) as tape:
             # Ensure the tape is watching the trainable variables
