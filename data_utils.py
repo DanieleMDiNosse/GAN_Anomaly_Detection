@@ -298,7 +298,7 @@ def divide_into_overlapping_pieces(data, overlap_size, num_pieces):
         end = start + piece_size
         if i == num_pieces - 1:
             end = len(data)
-        pieces.append(data[start:end])
+        pieces.append(data[start:end-1])
     return pieces
 
 
