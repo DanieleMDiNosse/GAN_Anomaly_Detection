@@ -5,12 +5,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from data_utils import *
+from sklearn.preprocessing import StandardScaler
 import argparse
 import logging
 # from tensorflow.keras.utils import plot_model
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
-from tensorflow.keras.layers import Input, Conv2D, Dense, Concatenate, Reshape, Dropout, LeakyReLU, Conv2DTranspose, BatchNormalization, Flatten, GaussianNoise, LSTM
+from tensorflow.keras.layers import Input, Conv2D, Dense, Concatenate, Reshape, Dropout, LeakyReLU, Conv2DTranspose, BatchNormalization, Flatten, GaussianNoise, LSTM, ReLU
 from tensorflow.keras.models import Model
 
 def build_conditioner(T_cond, num_features_condition, cond_units):
@@ -43,7 +44,7 @@ def build_conditioner(T_cond, num_features_condition, cond_units):
     conditioner_model = Model(condition_input, output_cond, name="condition_model")
     return conditioner_model
 
-def build_generator(latent_dim, gen_units, T_real, num_features_input, activate_condition):
+def build_generator(T_real, num_features_input):
     '''Build the generator model. The generator takes as input the condition and the noise and outputs a sample.
     The condition is processed by a LSTM layer and the noise is processed by a LSTM layer. Then the two outputs are concatenated
     and processed by a dense layer. The output of the dense layer is reshaped to have the same shape of the real samples.
@@ -70,49 +71,76 @@ def build_generator(latent_dim, gen_units, T_real, num_features_input, activate_
         The condition model.
     '''
 
-    K = gen_units[0]
-    # conv_units = gen_units[2]
-    # kernel_size = gen_units[3]
+    input = Input(shape=(T_real, num_features_input), name='input')
+    
+    x = Reshape((T_real, num_features_input, 1), name='1_reshape')(input) # (None, T_real, num_features_input, 1)
 
-    if not activate_condition:
-        input = Input(shape=(latent_dim*T_real), name='noise_input')
-        zeros = tf.zeros((tf.shape(input)[0], K))
-        x = Concatenate(axis=-1, name='concatenation')([zeros, input])
-    else:
-        noise_input = Input(shape=(latent_dim*T_real), name='noise_input')
-        condition_output = Input(shape=(K,), name='condition_input_from_conditioner')
-        x = Concatenate(axis=-1, name='concatenation')([condition_output, noise_input])
-
-    x = Dense(T_real*num_features_input*5, name='1_dense')(x)
+    # Encoder
+    x = Conv2D(64, (5,5), strides=(1,1), padding="same", name='1_conv2d')(x) # (None, T_real, num_features_input, 64)
     x = BatchNormalization(name='1_batch_norm')(x)
-    x = LeakyReLU(0.2)(x)
+    x64 = LeakyReLU(0.2)(x)
 
-    x = Dense(T_real*num_features_input*10, name='2_dense')(x)
+    x = Conv2D(128, (5,5), strides=(2,1), padding="same", name='2_conv2d')(x64) # (None, T_real/2, num_features_input, 128)
     x = BatchNormalization(name='2_batch_norm')(x)
-    x = LeakyReLU(0.2)(x)
+    x128 = LeakyReLU(0.2)(x)
 
-    x = Dense(T_real*num_features_input*8, name='3_dense')(x)
+    x = Conv2D(256, (5,5), strides=(5,1), padding="same", name='3_conv2d')(x128) # (None, T_real/10, num_features_input, 256)
     x = BatchNormalization(name='3_batch_norm')(x)
-    x = LeakyReLU(0.2)(x)
-    x = Reshape((T_real,num_features_input,8), name='1_reshape')(x)
+    x256 = LeakyReLU(0.2)(x)
 
-    x = Conv2D(filters=4, kernel_size=(5,1), strides=(1,1), padding="same", name='1_conv2d')(x)
+    x = Conv2D(512, kernel_size=(5,1), strides=(5,1), padding="same", name='4_conv2d')(x256) # (None, T_real/50, num_features_input, 512)
     x = BatchNormalization(name='4_batch_norm')(x)
-    x = LeakyReLU(0.2)(x)
+    x512 = LeakyReLU(0.2)(x)
 
-    x = Conv2D(filters=1, kernel_size=(5,1), strides=(1,1), padding="same", name='2_conv2d')(x)
+    x = Conv2D(512, kernel_size=(5,1), strides=(5,5), padding="same", name='5_conv2d')(x512) # (None, T_real/250, num_features_input/5, 512)
     x = BatchNormalization(name='5_batch_norm')(x)
     x = LeakyReLU(0.2)(x)
 
+    # Decoder
+    x512t = Conv2DTranspose(512, kernel_size=(5,1), strides=(5,5), padding="same", name='1_conv2d_transpose')(x) # (None, T_real/50, num_features_input, 512)
+    x = BatchNormalization(name='6_batch_norm')(x)
+    x = Dropout(0.5)(x)
+    x = ReLU()(x)
+    x = Concatenate(axis=-1)([x512, x512t]) # (None, T_real/50, num_features_input, 1024)
+
+    x = Conv2DTranspose(256, (5,1), strides=(5,1), padding="same", name='2_conv2d_transpose')(x) # (None, T_real/10, num_features_input, 256)
+    x = BatchNormalization(name='7_batch_norm')(x)
+    x = Dropout(0.5)(x)
+    x256t = ReLU()(x)
+    x = Concatenate(axis=-1)([x256, x256t]) # (None, T_real/10, num_features_input, 512)
+
+    x = Conv2DTranspose(128, (5,5), strides=(5,1), padding="same", name='3_conv2d_transpose')(x) # (None, T_real/2, num_features_input, 128)
+    x = BatchNormalization(name='8_batch_norm')(x)
+    x = Dropout(0.5)(x)
+    x128t = ReLU()(x)
+    x = Concatenate(axis=-1)([x128, x128t]) # (None, T_real/2, num_features_input, 256)
+
+    x = Conv2DTranspose(64, (5,5), strides=(2,1), padding="same", name='4_conv2d_transpose')(x) # (None, T_real, num_features_input, 64)
+    x = BatchNormalization(name='9_batch_norm')(x)
+    x = Dropout(0.5)(x)
+    x64t = ReLU()(x)
+    x = Concatenate(axis=-1)([x64, x64t]) # (None, T_real, num_features_input, 128)
+
+    x = Conv2DTranspose(32, (5,5), strides=(1,1), padding="same", name='5_conv2d_transpose')(x) # (None, T_real, num_features_input, 32)
+    x = BatchNormalization(name='10_batch_norm')(x)
+    x = Dropout(0.5)(x)
+    x = ReLU()(x)
+
+    x = Conv2DTranspose(1, (5,5), strides=(1,1), padding="same", name='6_conv2d_transpose')(x) # (None, T_real, num_features_input, 1)
+    x = BatchNormalization(name='11_batch_norm')(x)
+    x = Dropout(0.5)(x)
+    x = ReLU()(x)
+
     output = Reshape((T_real,num_features_input), name='2_reshape')(x)
 
-    if not activate_condition:
-        generator_model = Model(input, output, name="generator_model") 
-    else:
-        generator_model = Model([condition_output, noise_input], output, name="generator_model")
+    generator_model = Model([input], output, name="generator_model")
+
+    #Plot the model
+    # plot_model(generator_model, to_file='generator_model_plot.png', show_shapes=True, show_layer_names=True)
+
     return generator_model
 
-def build_discriminator(T_real, num_features_input, disc_units, activate_condition):
+def build_discriminator(T_real, num_features_input):
     '''Build the discriminator model. The discriminator takes as input the condition and the sample and outputs a real value.
     In a WGAN the discriminator does not classify samples, but it rather outputs a real value evaluating their realism, thus we refer to it as a discriminator.
     The condition is taken as the output of the condition model and then it is processed in order to match the real sample dimensions.
@@ -135,46 +163,35 @@ def build_discriminator(T_real, num_features_input, disc_units, activate_conditi
     discriminator_model : tensorflow.keras.Model
         The discriminator model.'''
 
-    K = disc_units[0]
-    # Input for the condition
-    input_real = Input(shape=(T_real, num_features_input), name='input')
-    x = Reshape((T_real, num_features_input, 1), name='1_reshape')(input_real) # (None, T_real, num_features_input, 1)
-    
-    if activate_condition:
-        condition_input = Input(shape=(K,), name='condition_input_from_conditioner')
+    input = Input(shape=(T_real, num_features_input), name='input')
+    x = Reshape((T_real, num_features_input, 1), name='1_reshape')(input) # (None, T_real, num_features_input, 1)
 
-    # x = Conv2D(filters=32, kernel_size=(5,1), strides=(2,1), padding="same", name='1_conv2D')(x) # (None, 125, 5, 32)
     x = Conv2D(filters=32, kernel_size=(5,5), strides=(1,1), padding="same", name='1_conv2D')(x) # (None, 125, 5, 32)
     x = GaussianNoise(0.2)(x)
-    # x = BatchNormalization()(x)
+    x = BatchNormalization()(x)
     x = LeakyReLU(0.2)(x)
     x = Dropout(0.3)(x)
 
     x = Conv2D(filters=64, kernel_size=(5,5), strides=(5,1), padding="same", name='2_conv2D')(x) # (None, 25, 10, 64)
-    # x = BatchNormalization()(x)
+    x = BatchNormalization()(x)
     x = GaussianNoise(0.2)(x)
     x = LeakyReLU(0.2)(x)
     x = Dropout(0.3)(x)
 
     x = Flatten()(x) # (None, 10240)
-    x = Dense(K)(x)
+    x = Dense(200)(x)
     x = LeakyReLU(0.2)(x)
 
-    if not activate_condition:
-        zeros = tf.zeros((tf.shape(x)[0], K))
-        x = Concatenate(axis=-1, name='concatenation')([zeros, x])
-        output = Dense(1, name='dense_output', activation='sigmoid')(x)
-        discriminator_model = Model(input_real, output, name='discriminator_model')
-    else:
-        x = Concatenate(axis=-1, name='concatenation')((x, condition_input))
-        output = Dense(1, name='dense_output', activation='sigmoid')(x) # Goal: 0 for fake samples, 1 for real samples
-        discriminator_model = Model([condition_input, input_real], output, name='discriminator_model')
-    # plot_model(discriminator_model, to_file=f'plots/{job_id}/discriminator_model_plot.png', show_shapes=True, show_layer_names=True)
+    output = Dense(1, name='dense_output', activation='sigmoid')(x) # Goal: 0 for fake samples, 1 for real samples
+    discriminator_model = Model([input], output, name='discriminator_model')
+
+    #Plot the model
+    # plot_model(discriminator_model, to_file='discriminator_model_plot.png', show_shapes=True, show_layer_names=True)
 
     return discriminator_model
 
 # @tf.function
-def train_step(real_samples, conditions, condition_model, generator_model, discriminator_model, optimizer, batch_size, latent_dim, j, epoch, metrics, threshold_condition, activate_condition):
+def train_step(real_samples, conditions, generator_model, discriminator_model, optimizer, batch_size, j, epoch, metrics):
     '''Train the GAN for one batch.
     
     Parameters
@@ -218,29 +235,14 @@ def train_step(real_samples, conditions, condition_model, generator_model, discr
 
     # Discriminator training
     for _ in range(1):
-        # Initialize random noise
-        noise = tf.random.normal([batch_size, latent_dim*T_real])
         with tf.GradientTape(persistent=True) as tape:
             # Ensure the tape is watching the trainable variables
             tape.watch(discriminator_model.trainable_variables)
-            tape.watch(condition_model.trainable_variables)
-            if activate_condition:
-                # Step 1: Use condition_model to preprocess conditions and get K values
-                k_values = condition_model(conditions, training=True)
-                # Step 2: Generate fake samples using generator
-                generated_samples = generator_model([k_values, noise], training=True)
-                # Step 3: discriminator distinguishes real and fake samples
-                real_output = discriminator_model([k_values, real_samples], training=True)
-                fake_output = discriminator_model([k_values, generated_samples], training=True)
-            else:
-                # Step 1: Generate fake samples using generator
-                generated_samples = generator_model(noise, training=True)
-                # Add some noise to the real and generated samples
-                real_samples_noised = real_samples + tf.random.normal(real_samples.shape, mean=0.0, stddev=0.5)
-                generated_samples_noised = generated_samples + tf.random.normal(generated_samples.shape, mean=0.0, stddev=0.5)
-                # Step 2: discriminator distinguishes real and fake samples
-                real_output = discriminator_model(real_samples_noised, training=True)
-                fake_output = discriminator_model(generated_samples_noised, training=True)
+            # Step 1: Generate fake samples using generator
+            generated_samples = generator_model(conditions, training=True)
+            # Step 2: discriminator distinguishes real and fake samples
+            real_output = discriminator_model(real_samples, training=True)
+            fake_output = discriminator_model(generated_samples, training=True)
             # Step 4: Compute the losses
             discriminator_loss = compute_discriminator_loss(real_output, fake_output)
 
@@ -248,35 +250,19 @@ def train_step(real_samples, conditions, condition_model, generator_model, discr
         gradients_of_discriminator = tape.gradient(discriminator_loss, discriminator_model.trainable_variables)
         # Apply gradients to update weights
         discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator_model.trainable_variables))
-
-        if activate_condition:
-            # Calculate gradients
-            gradients_of_conditioner = tape.gradient(discriminator_loss, condition_model.trainable_variables)
-            # Apply gradients to update weights
-            discriminator_optimizer.apply_gradients(zip(gradients_of_conditioner, condition_model.trainable_variables))
     
     # Delete the tape to free resources
     del tape
 
     # Generator training
     for _ in range(1):
-        noise = tf.random.normal([batch_size, latent_dim*T_real])
         with tf.GradientTape(persistent=True) as tape:
             # Ensure the tape is watching the trainable variables
-            tape.watch(condition_model.trainable_variables)
             tape.watch(generator_model.trainable_variables)
-            if activate_condition:
-                # Step 1: Use condition_model to preprocess conditions and get K values
-                k_values = condition_model(conditions, training=True)
-                # Step 2: Generate fake samples using generator
-                generated_samples = generator_model([k_values, noise], training=True)
-                # Step 3: discriminator distinguishes real and fake samples
-                fake_output = discriminator_model([k_values, generated_samples], training=True)
-            else:
-                # Step 1: Generate fake samples using generator
-                generated_samples = generator_model(noise, training=True)
-                # Step 2: discriminator distinguishes real and fake samples
-                fake_output = discriminator_model(generated_samples, training=True)
+            # Step 1: Generate fake samples using generator
+            generated_samples = generator_model(conditions, training=True)
+            # Step 2: discriminator distinguishes real and fake samples
+            fake_output = discriminator_model(generated_samples, training=True)
             # Compute the losses
             gen_loss = compute_generator_loss(fake_output)
 
@@ -285,20 +271,11 @@ def train_step(real_samples, conditions, condition_model, generator_model, discr
     # Apply gradients to update weights
     generator_optimizer.apply_gradients(zip(gradients_of_generator, generator_model.trainable_variables))
 
-    if activate_condition:
-        # Calculate gradients
-        gradients_of_conditioner = tape.gradient(gen_loss, condition_model.trainable_variables)
-        # Apply gradients to update weights
-        generator_optimizer.apply_gradients(zip(gradients_of_conditioner, condition_model.trainable_variables))
-
     # Delete the tape to free resources
     del tape
 
     if j % 100 == 0:
-        if activate_condition:
-            logging.info(f'ON | Epoch: {epoch} | Batch: {j}/{num_batches} | Disc loss: {np.mean(discriminator_loss):.5f} | Gen loss: {np.mean(gen_loss):.5f} | <Disc_output_r>: {real_output.numpy()[1,:].mean():.5f}| <Disc_output_f>: {fake_output.numpy()[1,:].mean():.5f}')
-        else:
-            logging.info(f'OFF | Epoch: {epoch} | Batch: {j}/{num_batches} | Disc loss: {np.mean(discriminator_loss):.5f} | Gen loss: {np.mean(gen_loss):.5f} | <Disc_output_r>: {real_output.numpy().mean():.5f}| <Disc_output_f>: {fake_output.numpy().mean():.5f}')
+        logging.info(f'Epoch: {epoch} | Batch: {j}/{num_batches} | Disc loss: {np.mean(discriminator_loss):.5f} | Gen loss: {np.mean(gen_loss):.5f} | <Disc_output_r>: {real_output.numpy().mean():.5f}| <Disc_output_f>: {fake_output.numpy().mean():.5f}')
 
         models = [generator_model, discriminator_model]
         gradients = [gradients_of_generator, gradients_of_discriminator]
@@ -311,11 +288,11 @@ def train_step(real_samples, conditions, condition_model, generator_model, discr
                 logging.info(f"\tLayer {var.name}, Gradient Norm: {grad_norm:.5f}")
 
     if j % 300 == 0:
-        summarize_performance(real_output, fake_output, discriminator_loss, gen_loss, generated_samples, real_samples, metrics, j, epoch, threshold_condition)
-        condition_model.save(f'models/{job_id}/condition_model.h5')
+        summarize_performance(real_output, fake_output, discriminator_loss, gen_loss, generated_samples, real_samples, metrics, j, epoch)
         generator_model.save(f'models/{job_id}/generator_model.h5')
         discriminator_model.save(f'models/{job_id}/discriminator_model.h5')
-    return condition_model, generator_model, discriminator_model
+
+    return generator_model, discriminator_model
 
 def compute_discriminator_loss(real_output, fake_output):
     '''Compute the discriminator loss.
@@ -349,10 +326,11 @@ def compute_generator_loss(fake_output):
     -------
     float
         The generator loss.'''
-    return -tf.math.log(fake_output + 1e-10)
+    # return -tf.math.log(fake_output + 1e-10)
+    return binary_crossentropy(tf.ones_like(fake_output), fake_output)
     # return tf.reduce_mean(binary_crossentropy(tf.ones_like(fake_output), fake_output))
 
-def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss, generated_samples, real_samples, metrics, i, epoch, threshold_condition):
+def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss, generated_samples, real_samples, metrics, i, epoch):
     '''Summarize the performance of the GAN.
     
     Parameters
@@ -376,7 +354,7 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
 
     generated_samples = generated_samples[0,:,:].numpy()
     real_samples = real_samples[0,:,:].numpy()
-    features = ['Event type', 'Size', 'Price', 'Direction']
+    features = ['Time', 'Event type', 'Size', 'Price', 'Direction']
 
     # add the metrics to the dictionary
     metrics['discriminator_loss'].append(np.mean(discriminator_loss))
@@ -386,25 +364,23 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
     for score in fake_output[1,:]:
         metrics['fake_disc_out'].append(score)
 
-    y_max = max(np.max(metrics['discriminator_loss']), np.max(metrics['gen_loss']).max())
+    # y_max = max(np.max(metrics['discriminator_loss']), np.max(metrics['gen_loss']).max())
     plt.figure(figsize=(10, 5), tight_layout=True)
     plt.plot(metrics['discriminator_loss'], label='Discriminator loss')
     plt.plot(metrics['gen_loss'], label='Generator loss')
     plt.xlabel('Batch')
-    plt.xticks(np.arange(300, len(metrics['discriminator_loss'])+1, step=300), labels=np.arange(300, len(metrics['real_disc_out'])+1, step=300).astype('str'))
+    # plt.xticks(np.arange(300, len(metrics['discriminator_loss'])+1, step=300), labels=np.arange(300, len(metrics['real_disc_out'])+1, step=300).astype('str'))
     plt.ylabel('Loss')
-    plt.vlines(threshold_condition/300, 0, y_max, linestyles='dashed', alpha=0.6)
     plt.legend()
     plt.savefig(f'plots/{job_id}/losses.png')
 
-    y_max = max(np.max(metrics['real_disc_out']), np.max(metrics['fake_disc_out']))
+    # y_max = max(np.max(metrics['real_disc_out']), np.max(metrics['fake_disc_out']))
     plt.figure(figsize=(10, 5), tight_layout=True)
     plt.plot(metrics['real_disc_out'], label='Real')
     plt.plot(metrics['fake_disc_out'], label='Fake')
     plt.xlabel('Batch')
-    plt.xticks(np.arange(300, len(metrics['real_disc_out'])+1, step=300), labels=np.arange(300, len(metrics['real_disc_out'])+1, step=300).astype('str'))
+    # plt.xticks(np.arange(300, len(metrics['real_disc_out'])+1, step=300), labels=np.arange(300, len(metrics['real_disc_out'])+1, step=300).astype('str'))
     plt.ylabel('Discriminator output')
-    plt.vlines(threshold_condition/300, 0, y_max, linestyles='dashed', alpha=0.6)
     plt.legend()
     plt.savefig(f'plots/{job_id}/disc_output.png')
 
@@ -502,18 +478,13 @@ if __name__ == '__main__':
     # Define the parameters of the GAN.
     # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
     window_size = 500
-    n_features_condition = message_dfs[0].shape[1]
-    n_features_input = n_features_condition - 1
+    n_features_input = message_dfs[0].shape[1]
     latent_dim = 15
     n_epochs = 100
-    T_condition = int(window_size*0.75)
+    T_condition = int(window_size*0.5)
     T_real = window_size - T_condition
     n_units_generator = 100
     batch_size = 64
-    # output condition, hidden units condition, filter dim, kernel size
-    gen_units = [20, 64, 5, 25]
-    cond_units = [20, 64, 5, 25]
-    disc_units = [gen_units[0], 64, 5, 25]
 
     num_pieces = 10
     for day in range(N):
@@ -530,43 +501,55 @@ if __name__ == '__main__':
                 num_windows += data.shape[0]-window_size+1
             logging.info(f'Number of windows: {num_windows}')
 
-            logging.info(f'Dividing data into windows')
+            # Create a scaler object to scale the condition data
+            scaler = StandardScaler()
             num_windows = 0
+            logging.info(f'Dividing the condition data into windows and memorize "sub" estimates of mean and variance...')
             for piece_idx, data in enumerate(sub_data):
 
                 if sub_data[-1].shape[0] < window_size:
-                    raise ValueError(f'The last piece has shape {sub_data[-1].shape} and it is smaller than the window size {window_size}.')
+                     raise ValueError(f'The last piece has shape {sub_data[-1].shape} and it is smaller than the window size {window_size}.')
 
+                logging.info(f'\t{piece_idx+1}/{num_pieces}')
                 # Each piece is divided into windows
                 windows = np.array(divide_into_windows(data, window_size))
+                logging.info(f'\twindows shape: {windows.shape}')  # Expected (num_windows, condition_length, n_features_condition)
                 num_windows += windows.shape[0]
-                del windows  # Explicit deletion
-            logging.info(f'Number of windows: {num_windows}')
+                # The scaler is updated with the current piece
+                scaler.partial_fit(windows.reshape(-1, windows.shape[-1]))
+            logging.info('Done.')
 
-            # Create a memmap to store the data. The first shape is the number of windows (samples) for each piece
-            # multiplied by the number of pieces.
-            final_shape_input = (num_windows, window_size, n_features_input+1)
-            fp_input = np.memmap("final_data.dat", dtype='float32', mode='w+', shape=final_shape_input)
+            logging.info(f'Total number of windows: {num_windows}')
+
+            # Create a memmap to store the scaled data. The first shape is sum_i num_windows_i, where num_windows_i is the number of windows
+            # for the i-th piece.
+            final_shape_condition = (num_windows, window_size, n_features_input)
+            fp = np.memmap("final_data.dat", dtype='float32', mode='w+', shape=final_shape_condition)
 
             start_idx = 0
+            logging.info(f'\nStart scaling on the condition data...')
             for piece_idx, data in enumerate(sub_data):
                 logging.info(f'\t{piece_idx+1}/{num_pieces}')
+                # Here the scaling is performed and the resulting scaled data is assign to the vector fp
+                # Each piece is divided into windows and those windows are scaled
                 windows = np.array(divide_into_windows(data, window_size))
-                end_idx = start_idx + windows.shape[0]
-                fp_input[start_idx:end_idx] = windows
+                logging.info(f'\twindows shape: {windows.shape}')
+                scaled_windows = scaler.transform(windows.reshape(-1, windows.shape[-1])).reshape(windows.shape)
+                end_idx = start_idx + scaled_windows.shape[0]
+                fp[start_idx:end_idx] = scaled_windows
                 start_idx = end_idx
-                del windows  # Explicit deletion
+                del scaled_windows  # Explicit deletion
             logging.info('Done.')
 
             logging.info('\nSplit the condition data into train, validation and test sets...')
-            train, test = fp_input[:int(fp_input.shape[0]*0.75)], fp_input[int(fp_input.shape[0]*0.75):]
+            train, test = fp[:int(fp.shape[0]*0.75)], fp[int(fp.shape[0]*0.75):]
             train, val = train[:int(train.shape[0]*0.75)], train[int(train.shape[0]*0.75):]
             logging.info('Done.')
 
             logging.info('\nDividing each window into condition and input...')
-            condition_train, input_train = train[:, :T_condition, :], train[:, T_condition:, 1:]
-            condition_val, input_val = val[:, :T_condition, :], val[:, T_condition:, 1:]
-            condition_test, input_test = test[:, :T_condition, :], test[:, T_condition:, 1:]
+            condition_train, input_train = train[:, :T_condition, :], train[:, T_condition:, :]
+            condition_val, input_val = val[:, :T_condition, :], val[:, T_condition:, :]
+            condition_test, input_test = test[:, :T_condition, :], test[:, T_condition:, :]
             logging.info('Done.')
 
             logging.info('\nSave the files...')
@@ -588,6 +571,13 @@ if __name__ == '__main__':
             condition_val = np.load(f'../data/condition_val_{stock}_{window_size}_{day+1}.npy', mmap_mode='r')
             condition_test = np.load(f'../data/condition_test_{stock}_{window_size}_{day+1}.npy', mmap_mode='r')
             
+            logging.info(f'input_train shape:\n\t{input_train.shape}')
+            logging.info(f'condition_train shape:\n\t{condition_train.shape}')
+            logging.info(f'input_val shape:\n\t{input_val.shape}')
+            logging.info(f'condition_val shape:\n\t{condition_val.shape}')
+            logging.info(f'input_test shape:\n\t{input_test.shape}')
+            logging.info(f'condition_test shape:\n\t{condition_test.shape}')
+
             logging.info('Done.')
 
         # Use logging.info to print all the hyperparameters
@@ -596,19 +586,16 @@ if __name__ == '__main__':
         # Define the optimizers
         generator_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
         discriminator_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
+        optimizer = [generator_optimizer, discriminator_optimizer]
 
         # Define the loss function
         binary_crossentropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
 
-        optimizer = [generator_optimizer, discriminator_optimizer]
-
-        condition_model = build_conditioner(T_condition, n_features_condition, cond_units)
-        generator_model = build_generator(latent_dim, gen_units, T_real, n_features_input, activate_condition=False)
-        discriminator_model = build_discriminator(T_real, n_features_input, disc_units, activate_condition=False)
+        # Build the models
+        generator_model = build_generator(T_real, n_features_input)
+        discriminator_model = build_discriminator(T_real, n_features_input)
 
         logging.info('\n[Model] ---------- MODEL SUMMARIES ----------')
-        condition_model.summary(print_fn=logging.info)
-        logging.info('\n')
         generator_model.summary(print_fn=logging.info)
         logging.info('\n')
         discriminator_model.summary(print_fn=logging.info)
@@ -620,7 +607,7 @@ if __name__ == '__main__':
         # Train the GAN. When I load the data, I use the argument mmap_mode='r' to avoid to load the data in memory.
         # This is because the data is too big to fit in memory. This means that the data is loaded in memory only when
         # when it is needed.
-        num_subvectors = 5
+        num_subvectors = 1
         slice = int(input_train.shape[0] / num_subvectors)
         for i in range(num_subvectors):
             logging.info(f'\n---------- TRAINING ON PIECE {i} ----------')
@@ -635,7 +622,6 @@ if __name__ == '__main__':
             if i > 0:
                 # Load the models of the previous training (previous piece)
                 logging.info('Loading models from the previous piece...')
-                condition_model = tf.keras.models.load_model(f'models/{job_id}/condition_model.h5')
                 generator_model = tf.keras.models.load_model(f'models/{job_id}/generator_model.h5')
                 discriminator_model = tf.keras.models.load_model(f'models/{job_id}/discriminator_model.h5')
             for epoch in range(n_epochs):
@@ -643,29 +629,9 @@ if __name__ == '__main__':
                 for batch_real_samples, batch_conditions in dataset:
                     j += 1
                     batch_size = batch_real_samples.shape[0]
-                    # threshold_condition = int(num_batches/5)
-                    threshold_condition = num_batches*3
-                    # if j < threshold_condition:
-                    if i < 3:
-                        condition_model, generator_model, discriminator_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, discriminator_model, optimizer, batch_size, latent_dim, j, epoch, metrics, threshold_condition, activate_condition=False)
-                    else:
-                        condition_model, generator_model, discriminator_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, discriminator_model, optimizer, batch_size, latent_dim, j, epoch, metrics, threshold_condition, activate_condition=True)
-            
-                # Create another time the models and load the weights of the trained one. This is done due to the fact
-                # that in the first part of the training the condition is not active and the input shapes of the models
-                # are different.
-                weights = [model.get_weights() for model in [condition_model, generator_model, discriminator_model]]
-
-                condition_model = build_conditioner(T_condition, n_features_condition, cond_units)
-                generator_model = build_generator(latent_dim, gen_units, T_real, n_features_input, activate_condition=False)
-                discriminator_model = build_discriminator(T_real, n_features_input, disc_units, activate_condition=False)
-
-                condition_model.set_weights(weights[0])
-                generator_model.set_weights(weights[1])
-                discriminator_model.set_weights(weights[2])
+                    generator_model, discriminator_model = train_step(batch_real_samples, batch_conditions, generator_model, discriminator_model, optimizer, batch_size, j, epoch, metrics)
 
             # save the models
-            condition_model.save(f'models/{job_id}/condition_model.h5')
             generator_model.save(f'models/{job_id}/generator_model.h5')
             discriminator_model.save(f'models/{job_id}/discriminator_model.h5')
 
@@ -676,40 +642,15 @@ if __name__ == '__main__':
         dataset = tf.data.Dataset.from_tensor_slices((input_train, condition_train)).batch(batch_size)
         global last_num_batches
         last_num_batches = len(dataset)
-        condition_model = tf.keras.models.load_model(f'models/{job_id}/condition_model.h5')
         generator_model = tf.keras.models.load_model(f'models/{job_id}/generator_model.h5')
         discriminator_model = tf.keras.models.load_model(f'models/{job_id}/discriminator_model.h5')
         for epoch in range(n_epochs):
             j = 0
             for batch_real_samples, batch_conditions in dataset:
                 batch_size = batch_real_samples.shape[0]
-                threshold_condition = int(last_num_batches/5)
-                if j < threshold_condition:
-                    condition_model, generator_model, discriminator_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, discriminator_model, optimizer, batch_size, latent_dim, j, epoch, metrics, threshold_condition, activate_condition=False)
-                elif j == threshold_condition:
-                    weights = [model.get_weights() for model in [condition_model, generator_model, discriminator_model]]
-                    condition_model = build_conditioner(T_condition, n_features_condition, cond_units)
-                    generator_model = build_generator(latent_dim, gen_units, T_real, n_features_input, activate_condition=True)
-                    discriminator_model = build_discriminator(T_real, n_features_input, disc_units, activate_condition=True)
-                    condition_model.set_weights(weights[0])
-                    generator_model.set_weights(weights[1])
-                    discriminator_model.set_weights(weights[2])
-                    condition_model, generator_model, discriminator_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, discriminator_model, optimizer, batch_size, latent_dim, j, epoch, metrics, activate_condition=True)
-                else:
-                    condition_model, generator_model, discriminator_model = train_step(batch_real_samples, batch_conditions, condition_model, generator_model, discriminator_model, optimizer, batch_size, latent_dim, j, epoch, metrics, activate_condition=True)
-            # Create another time the models and load the weights of the trained one. This is done due to the fact
-            # that in the first part of the training the condition is not active and the input shapes of the models
-            # are different.
-            weights = [model.get_weights() for model in [condition_model, generator_model, discriminator_model]]
-            condition_model = build_conditioner(T_condition, n_features_condition, cond_units)
-            generator_model = build_generator(latent_dim, gen_units, T_real, n_features_input, activate_condition=False)
-            discriminator_model = build_discriminator(T_real, n_features_input, disc_units, activate_condition=False)
-            condition_model.set_weights(weights[0])
-            generator_model.set_weights(weights[1])
-            discriminator_model.set_weights(weights[2])
+                generator_model, discriminator_model = train_step(batch_real_samples, batch_conditions, generator_model, discriminator_model, optimizer, batch_size, j, epoch, metrics)
         
         # save the models
-        condition_model.save(f'models/{job_id}/condition_model.h5')
         generator_model.save(f'models/{job_id}/generator_model.h5')
         discriminator_model.save(f'models/{job_id}/discriminator_model.h5')
 
