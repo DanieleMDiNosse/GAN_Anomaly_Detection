@@ -354,7 +354,7 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
 
     generated_samples = generated_samples[0,:,:].numpy()
     real_samples = real_samples[0,:,:].numpy()
-    features = ['Time', 'Event type', 'Size', 'Price', 'Direction']
+    features = ['Event type', 'Size', 'Price', 'Direction']
 
     # add the metrics to the dictionary
     metrics['discriminator_loss'].append(np.mean(discriminator_loss))
@@ -469,7 +469,7 @@ if __name__ == '__main__':
     message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][:N]
 
     # Preprocess the data using preprocessing_message_df. This function performs the following operations:
-    # 1. Drop the columns that are not needed (Order ID)
+    # 1. Drop the columns that are not needed (Order ID, Time)
     # 2. Filter Event types considering only 1,2,3,4
     # 3. Filter the data considering only the elements from the 1000th (due to the volatility estimation)
     res = np.array([preprocessing_message_df(df) for df in message_dfs], dtype=object)
@@ -479,7 +479,7 @@ if __name__ == '__main__':
     # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
     window_size = 500
     n_features_input = message_dfs[0].shape[1]
-    latent_dim = 15
+    # latent_dim = 15
     n_epochs = 100
     T_condition = int(window_size*0.5)
     T_real = window_size - T_condition
@@ -581,7 +581,7 @@ if __name__ == '__main__':
             logging.info('Done.')
 
         # Use logging.info to print all the hyperparameters
-        logging.info(f'\nHYPERPARAMETERS:\n\tlatent_dim: {latent_dim}\n\tn_epochs: {n_epochs}\n\tT_condition: {T_condition}\n\tT_real: {T_real}\n\tFeatures Input: {message_dfs[day].columns}\n\tbatch_size: {batch_size}\n\tnum_batches: {input_train.shape[0]//batch_size}')
+        logging.info(f'\nHYPERPARAMETERS:\n\tn_epochs: {n_epochs}\n\tT_condition: {T_condition}\n\tT_real: {T_real}\n\tFeatures Input: {message_dfs[day].columns}\n\tbatch_size: {batch_size}\n\tnum_batches: {input_train.shape[0]//batch_size}')
 
         # Define the optimizers
         generator_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)

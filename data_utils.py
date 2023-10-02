@@ -264,7 +264,7 @@ def fast_autocorrelation(x, alpha=0.05):
 
 def preprocessing_message_df(message_df, m=1000):
     # Drop columns Order ID
-    message_df = message_df.drop(columns=['Order ID'])
+    message_df = message_df.drop(columns=['Order ID', 'Time'])
     # Filter by Event type equal to 1,2,3 or 4
     message_df = message_df[message_df['Event type'].isin([1,2,3,4])]
     # Take the rows from the f-th one
