@@ -11,7 +11,7 @@ import logging
 # from tensorflow.keras.utils import plot_model
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
-from tensorflow.keras.layers import Input, Conv2D, Dense, Concatenate, Reshape, Dropout, LeakyReLU, Conv2DTranspose, BatchNormalization, Flatten, GaussianNoise, LSTM, ReLU
+from tensorflow.keras.layers import Input, Conv2D, Dense, Concatenate, Reshape, Dropout, LeakyReLU, MaxPooling1D, UpSampling1D, BatchNormalization, Flatten, GaussianNoise, LSTM, ReLU
 from tensorflow.keras.models import Model
 
 def build_conditioner(T_cond, num_features_condition, cond_units):
@@ -73,65 +73,41 @@ def build_generator(T_real, num_features_input):
 
     input = Input(shape=(T_real, num_features_input), name='input')
     
-    x = Reshape((T_real, num_features_input, 1), name='1_reshape')(input) # (None, T_real, num_features_input, 1)
+    # Encoding Path
+    encode_1 = LSTM(units=128, return_sequences=True)(input)
+    downsample_1 = MaxPooling1D(pool_size=2)(encode_1)
 
-    # Encoder
-    x = Conv2D(64, (5,5), strides=(1,1), padding="same", name='1_conv2d')(x) # (None, T_real, num_features_input, 64)
-    x = BatchNormalization(name='1_batch_norm')(x)
-    x64 = LeakyReLU(0.2)(x)
+    encode_2 = LSTM(units=64, return_sequences=True)(downsample_1)
+    downsample_2 = MaxPooling1D(pool_size=2)(encode_2)
 
-    x = Conv2D(128, (5,5), strides=(2,1), padding="same", name='2_conv2d')(x64) # (None, T_real/2, num_features_input, 128)
-    x = BatchNormalization(name='2_batch_norm')(x)
-    x128 = LeakyReLU(0.2)(x)
+    encode_3 = LSTM(units=32, return_sequences=True)(downsample_2)
+    downsample_3 = MaxPooling1D(pool_size=2)(encode_3)
 
-    x = Conv2D(256, (5,5), strides=(5,1), padding="same", name='3_conv2d')(x128) # (None, T_real/10, num_features_input, 256)
-    x = BatchNormalization(name='3_batch_norm')(x)
-    x256 = LeakyReLU(0.2)(x)
+    encode_4 = LSTM(units=16, return_sequences=True)(downsample_3)
+    downsample_4 = MaxPooling1D(pool_size=2)(encode_4)
 
-    x = Conv2D(512, kernel_size=(5,1), strides=(5,1), padding="same", name='4_conv2d')(x256) # (None, T_real/50, num_features_input, 512)
-    x = BatchNormalization(name='4_batch_norm')(x)
-    x512 = LeakyReLU(0.2)(x)
+    # Bottleneck
+    bottleneck = LSTM(units=8, return_sequences=True)(downsample_4)
 
-    x = Conv2D(512, kernel_size=(5,1), strides=(5,5), padding="same", name='5_conv2d')(x512) # (None, T_real/250, num_features_input/5, 512)
-    x = BatchNormalization(name='5_batch_norm')(x)
-    x = LeakyReLU(0.2)(x)
+    # Decoding Path
+    upsample_1 = UpSampling1D(size=2)(bottleneck)
+    conc = Concatenate()([upsample_1, encode_4])
+    decode_1 = LSTM(units=16, return_sequences=True)(conc)
 
-    # Decoder
-    x512t = Conv2DTranspose(512, kernel_size=(5,1), strides=(5,5), padding="same", name='1_conv2d_transpose')(x) # (None, T_real/50, num_features_input, 512)
-    x = BatchNormalization(name='6_batch_norm')(x)
-    x = Dropout(0.5)(x)
-    x = ReLU()(x)
-    x = Concatenate(axis=-1)([x512, x512t]) # (None, T_real/50, num_features_input, 1024)
+    upsample_2 = UpSampling1D(size=2)(decode_1)
+    conc = Concatenate()([upsample_2, encode_3])
+    decode_2 = LSTM(units=32, return_sequences=True)(conc)
 
-    x = Conv2DTranspose(256, (5,1), strides=(5,1), padding="same", name='2_conv2d_transpose')(x) # (None, T_real/10, num_features_input, 256)
-    x = BatchNormalization(name='7_batch_norm')(x)
-    x = Dropout(0.5)(x)
-    x256t = ReLU()(x)
-    x = Concatenate(axis=-1)([x256, x256t]) # (None, T_real/10, num_features_input, 512)
+    upsample_3 = UpSampling1D(size=2)(decode_2)
+    conc = Concatenate()([upsample_3, encode_2])
+    decode_3 = LSTM(units=64, return_sequences=True)(conc)
 
-    x = Conv2DTranspose(128, (5,5), strides=(5,1), padding="same", name='3_conv2d_transpose')(x) # (None, T_real/2, num_features_input, 128)
-    x = BatchNormalization(name='8_batch_norm')(x)
-    x = Dropout(0.5)(x)
-    x128t = ReLU()(x)
-    x = Concatenate(axis=-1)([x128, x128t]) # (None, T_real/2, num_features_input, 256)
+    upsample_4 = UpSampling1D(size=2)(decode_3)
+    conc = Concatenate()([upsample_4, encode_1])
+    decode_4 = LSTM(units=128, return_sequences=True)(conc)
 
-    x = Conv2DTranspose(64, (5,5), strides=(2,1), padding="same", name='4_conv2d_transpose')(x) # (None, T_real, num_features_input, 64)
-    x = BatchNormalization(name='9_batch_norm')(x)
-    x = Dropout(0.5)(x)
-    x64t = ReLU()(x)
-    x = Concatenate(axis=-1)([x64, x64t]) # (None, T_real, num_features_input, 128)
-
-    x = Conv2DTranspose(32, (5,5), strides=(1,1), padding="same", name='5_conv2d_transpose')(x) # (None, T_real, num_features_input, 32)
-    x = BatchNormalization(name='10_batch_norm')(x)
-    x = Dropout(0.5)(x)
-    x = ReLU()(x)
-
-    x = Conv2DTranspose(1, (5,5), strides=(1,1), padding="same", name='6_conv2d_transpose')(x) # (None, T_real, num_features_input, 1)
-    x = BatchNormalization(name='11_batch_norm')(x)
-    x = Dropout(0.5)(x)
-    x = ReLU()(x)
-
-    output = Reshape((T_real,num_features_input), name='2_reshape')(x)
+    # Output
+    output = LSTM(units=5, return_sequences=True)(decode_4)
 
     generator_model = Model([input], output, name="generator_model")
 
@@ -477,7 +453,7 @@ if __name__ == '__main__':
 
     # Define the parameters of the GAN.
     # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
-    window_size = 500
+    window_size = 512
     n_features_input = message_dfs[0].shape[1]
     latent_dim = 15
     n_epochs = 100
