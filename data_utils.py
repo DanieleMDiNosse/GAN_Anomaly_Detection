@@ -10,6 +10,11 @@ import logging
 import numba as nb
 from tqdm import tqdm
 from multiprocessing import Pool
+import tensorflow as tf
+from PIL import Image, ImageSequence
+from statsmodels.tsa.ar_model import AutoReg
+from statsmodels.stats.diagnostic import acorr_ljungbox
+from scipy.stats import normaltest
 
 
 def rename_files(folder_path):
@@ -49,7 +54,7 @@ def rename_columns(stock, date):
 def divide_into_windows(data, window_size):
     """Divide the time series into windows of length window_size, each shifted by one time step."""
     windows = []
-    for i in range(len(data) - window_size):
+    for i in range(len(data) - window_size + 1):
         windows.append(data[i:i+window_size, :])
     return windows
 
@@ -247,7 +252,8 @@ def divide_vector(vector, N):
     length = int(vector.shape[0]/N)
     for i in range(N):
         subvectors.append(vector[i*length:(i+1)*length])
-    subvectors.append(vector[(i+1)*length:])
+    if vector.shape[0] % N != 0:
+        subvectors.append(vector[(i+1)*length:])
     return subvectors
 
 def fast_autocorrelation(x, alpha=0.05):
@@ -262,13 +268,13 @@ def fast_autocorrelation(x, alpha=0.05):
 
     return r, lag_no_corr
 
-def preprocessing_message_df(message_df, m=1000):
+def preprocessing_message_df(message_df, m=20000):
     # Drop columns Order ID
-    message_df = message_df.drop(columns=['Order ID'])
+    message_df = message_df.drop(columns=['Order ID', 'Time'])
     # Filter by Event type equal to 1,2,3 or 4
     message_df = message_df[message_df['Event type'].isin([1,2,3,4])]
-    # Take the rows from the f-th one
-    message_df = message_df.iloc[m:]
+    # Discard start and end of the day
+    message_df = message_df.iloc[m:-m]
 
     return message_df, message_df.index
 
@@ -295,11 +301,151 @@ def divide_into_overlapping_pieces(data, overlap_size, num_pieces):
     pieces = []
     for i in range(num_pieces):
         start = i * (piece_size - overlap_size)
-        end = start + piece_size
-        if i == num_pieces - 1:
+        if i < num_pieces - 1:
+            end = start + piece_size
+        else:
             end = len(data)
-        pieces.append(data[start:end-1])
+        pieces.append(data[start:end])
     return pieces
+
+def train_test_split(data, train_size=0.75):
+    """Split the data into training and test sets.
+
+    Parameters
+    ----------
+    data : array_like
+        The data to be split.
+    train_size : float
+        The fraction of the data to be used for training.
+
+    Returns
+    -------
+    train_data : array_like
+        The training data.
+    test_data : array_like
+        The test data.
+    """
+    train_data = data[:int(np.ceil(train_size * len(data)))]
+    test_data = data[int(np.ceil(train_size * len(data))):]
+    return train_data, test_data
+
+def compute_accuracy(outputs):
+    if len(outputs) == 2:
+        real_output, fake_output = outputs
+        real_accuracy = tf.reduce_mean(tf.cast(tf.greater_equal(real_output, 0.5), tf.float32))
+        fake_accuracy = tf.reduce_mean(tf.cast(tf.less(fake_output, 0.5), tf.float32))
+        total_accuracy = (real_accuracy + fake_accuracy) / 2.0
+    else:
+        fake_output = outputs
+        total_accuracy = tf.reduce_mean(tf.cast(tf.less(fake_output, 0.5), tf.float32))
+    return total_accuracy
+
+def create_animated_gif(job_id, epoch, type_gen, type_disc, n_layers, data):
+    image_folder = f'plots/{job_id}_{type_gen}_{type_disc}_{n_layers}_{data}'
+    output_gif_path = f'{image_folder}/{job_id}_{epoch}.gif'
+    
+    # Get all files from the folder
+    image_files = [f for f in os.listdir(image_folder) if 'generated' in f]
+    logging.info(f'Creating animated GIF from {len(image_files)} images')
+    
+    image_files.sort()
+    images = []
+
+    # Open, append new images to the list, and close the file
+    for image_file in image_files:
+        image_path = os.path.join(image_folder, image_file)
+        with Image.open(image_path) as img:
+            images.append(img.copy())
+
+    # Save the images as an animated GIF
+    images[0].save(output_gif_path,
+                    save_all=True, append_images=images[1:], optimize=False, duration=100, loop=0)
+
+    # Close all the images in the list
+    for img in images:
+        img.close()
+
+    # Eliminate all the images
+    for image_file in image_files:
+        os.remove(os.path.join(image_folder, image_file))
+
+
+def sin_wave(amplitude, omega, phi, change_amplitude=False):
+    # Parameters
+    num_periods = 1000  # Total number of periods to generate
+    samples_per_period = 100  # Number of samples per period
+
+    # Generate a time vector
+    time = np.linspace(0, 2 * np.pi * num_periods, samples_per_period * num_periods)
+
+    # Generate the sine wave
+    sine_wave = amplitude * np.sin(omega*time + phi)
+
+    # Modify the amplitude every 3 periods
+    if change_amplitude:
+        for i in range(num_periods):
+            if i % 5 == 2:  # Check if it is the third period (0-based index)
+                sine_wave[i * samples_per_period:(i + 1) * samples_per_period] *= 3
+    # sine_wave = np.reshape(sine_wave, (sine_wave.shape[0], 1))
+    return sine_wave
+
+def step_fun(freq):
+    # Parameters
+    num_periods = 1000  # Total number of periods to generate
+    samples_per_period = 100  # Number of samples per period
+
+    # Generate a time vector
+    time = np.linspace(0, 2 * np.pi * num_periods, samples_per_period * num_periods)
+
+    # Generate the step function
+    step = np.zeros(time.shape)
+    for t in range(len(time)):
+        if time[t] % (2 * np.pi) < np.pi/(freq*2):
+            step[t] = 1
+    return step
+
+def ar1():
+    # Parameters
+    num_periods = 1000  # Total number of periods to generate
+    samples_per_period = 100  # Number of samples per period
+    phi = 0.9  # AR(1) coefficient
+    mu = 0.4
+    time = np.linspace(0, 2 * np.pi * num_periods, samples_per_period * num_periods)
+
+    # Generate the AR(1) process
+    ar1 = np.zeros(time.shape)
+    for t in range(1, len(time)):
+        ar1[t] = mu + phi * ar1[t - 1] + np.random.normal(0, 0.5)
+    return ar1
+
+def ar1_fit(data):
+    # Fit an AR(1) model to the data
+    model = AutoReg(data, lags=1)
+    model_fit = model.fit()
+    residuals = model_fit.resid
+    phi = model_fit.params[1]
+
+    # Perform normaltest on the residuals
+    logging.info("D'AGOSTINO-PEARSON TEST")
+    logging.info('Null hypothesis: x comes from a normal distribution')
+    _, p = normaltest(residuals)
+    logging.info(f'p = {p}')
+    if p < 0.05:  # null hypothesis: x comes from a normal distribution
+        logging.info(f"\tThe null hypothesis can be rejected")
+    else:
+        logging.info(f"\tThe null hypothesis cannot be rejected")
+    
+    # Perform Ljung-Box test on the residuals
+    logging.info("LJUNG-BOX TEST")
+    logging.info('Null hypothesis: there is no significant autocorellation')
+    _, p = acorr_ljungbox(residuals, lags=1)
+    logging.info(f'p = {p}')
+    if p < 0.05:  # null hypothesis: there is no significant autocorellation
+        logging.info(f"\tThe null hypothesis can be rejected")
+    else:
+        logging.info(f"\tThe null hypothesis cannot be rejected")
+    return None
+
 
 
 if __name__ == "__main__":
