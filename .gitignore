@@ -166,12 +166,14 @@ cython_debug/
 *.keras
 *.model
 *.npy
+models/
 
 # Plots
 *.png
 *.jpg
 *.jpeg
 *.svg
+plots/
 
 # Log
 *.log
@@ -181,3 +183,5 @@ cython_debug/
 
 # joblib files
 *.joblib
+
+note.txt
