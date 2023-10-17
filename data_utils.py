@@ -16,19 +16,21 @@ from statsmodels.tsa.ar_model import AutoReg
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from scipy.stats import normaltest
 
+def rename_columns(dataframes_folder_path):
+    '''This function takes as input the path of the folder containing the dataframes and renames the columns
+    of the message and orderbook dataframes.
+    
+    Parameters
+    ----------
+    dataframes_folder_path : string
+        Path of the folder containing the dataframes.
+    
+    Returns
+    -------
+    None.'''
 
-def rename_files(folder_path):
-    old_names = os.listdir(folder_path)
-    old_names_splitted = [name.split('_') for name in old_names]
-    new_names = [f'{name[0]}_{name[1]}_{name[4]}.parquet' for name in old_names_splitted]
-    for old_name, new_name in zip(old_names, new_names):
-        os.rename(f'{folder_path}/{old_name}', f'{folder_path}/{new_name}')
-    return None
-
-def rename_columns(stock, date):
     # Read the message dataframes
-    dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
-    # dataframes_paths = [path for path in dataframes_paths if 'orderbook' in path]
+    dataframes_paths = os.listdir(f'{dataframes_folder_path}/')
     dataframes_paths.sort()
     dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths]
     for data, path in zip(dataframes, dataframes_paths):
@@ -50,148 +52,82 @@ def rename_columns(stock, date):
         data.to_parquet(f'../data/{stock}_{date}/{path}')
     return None
 
+def prices_and_volumes(orderbook):
+    n = orderbook.shape[1]
+    bid_prices = np.array(orderbook[[f'Bid price {x}' for x in range(1, int(n/4)+1)]])
+    bid_volumes = np.array(orderbook[[f'Bid size {x}' for x in range(1, int(n/4)+1)]])
+    ask_prices = np.array(orderbook[[f'Ask price {x}' for x in range(1, int(n/4)+1)]])
+    ask_volumes = np.array(orderbook[[f'Ask size {x}' for x in range(1, int(n/4)+1)]])
+    return bid_prices, bid_volumes, ask_prices, ask_volumes
+
+
+def preprocessing_orderbook_df(orderbook, message, sampling_freq, discard_time, n_levels):
+    # Take the Time column of message and add it to orderbook
+    orderbook['Time'] = message['Time']
+    # Check the Time column and find the index k such that (orderbook['Time'][k] - orderbook['Time'][0])=discard_time
+    start = orderbook['Time'].values[0]
+    end = orderbook['Time'].values[-1]
+
+    for i in range(len(orderbook)):
+        if orderbook['Time'].values[i] - start >= discard_time:
+            k = i
+            break
+    
+    for i in range(len(orderbook)):
+        if end - orderbook['Time'].values[-i] >= discard_time:
+            l = len(orderbook) - i
+            break
+
+    # Discard the first k and the last l rows
+    orderbook = orderbook.iloc[k:l, :]
+    # Sample the orderbook every f events and take only the first n_levels levels
+    orderbook = orderbook.iloc[::sampling_freq, :2*n_levels]
+    # Reset the index
+    orderbook = orderbook.reset_index(drop=True)
+    return orderbook
+
+def lob_reconstruction(N, tick, bid_prices, bid_volumes, ask_prices, ask_volumes):
+    n_columns = bid_prices.shape[1]
+    m, M = bid_prices.min().min(), ask_prices.max().max()
+    for event in tqdm(range(N), desc='Computing LOB snapshots'):
+        # Create the price and volume arrays
+        p_line = np.arange(m, M+tick, tick)
+        volumes = np.zeros_like(p_line)
+
+        # Create two dictionaries to store the bid and ask prices keys and volumes as values
+        d_ask = {ask_prices[event][i]: ask_volumes[event][i] for i in range(int(n_columns))}
+        d_bid = {bid_prices[event][i]: -bid_volumes[event][i] for i in range(int(n_columns))}
+
+        # Create two boolean arrays to select the prices in the p_line array that are also in the bid and ask prices
+        mask_bid, mask_ask = np.in1d(p_line, list(d_bid.keys())), np.in1d(p_line, list(d_ask.keys()))
+
+        # Assign to the volumes array the volumes corresponding to the the bid and ask prices
+        volumes[np.where(mask_bid)] = list(d_bid.values())
+        volumes[np.where(mask_ask)] = list(d_ask.values())
+    
+    return p_line, volumes
+
+
 @nb.jit(nopython=True)
 def divide_into_windows(data, window_size):
-    """Divide the time series into windows of length window_size, each shifted by one time step."""
-    windows = []
-    for i in range(len(data) - window_size + 1):
-        windows.append(data[i:i+window_size, :])
-    return windows
-
-
-def evaluate_imbalance(data, f):
-    '''This function evaluates the imbalance between the bid and ask sides of the order book up to a certain level.
-    It averages over a number of events equal to the sampling frequency.
-    The imbalance is defined as the ratio between the bid volumes and the sum of the bid and ask volumes.
-    
-    Parameters
-    ----------
-    data : numpy array
-        Array containing the order book data.
-    f : int
-        Sampling frequency.
-
-    Returns
-    -------
-    imbalance : numpy array
-        Array containing the imbalance for each time step.'''
-
-    volumes = data[:,[i for i in range(1, data.shape[1], 2)]]
-    v_a = volumes[:, ::2]
-    v_b = volumes[:, 1::2]
-    v_b_summed = np.array([v_b[i:i+f].sum(axis=0) for i in range(0, v_b.shape[0]-f)])
-    v_a_summed = np.array([v_a[i:i+f].sum(axis=0) for i in range(0, v_a.shape[0]-f)])
-    imbalance = v_b_summed.sum(axis=1) / (v_b_summed.sum(axis=1) + v_a_summed.sum(axis=1))
-    return imbalance
-
-def rolling_volatility(p, m):
-    '''This function computes the rolling volatility of the ask prices up to a certain level.
-    It averages over a number of events equal to the m.
-    The rolling volatility is defined as the standard deviation of the returns.
-    
-    Parameters
-    ----------
-    p_a : numpy array
-        Ask prices.
-    m : int
-        Size of the window.
-    
-    Returns
-    -------
-    rolling_volatility : numpy array
-        Array containing the rolling volatility for each time step.'''
-    
-    returns = np.diff(p)
-    returns = np.insert(returns, 0, 0)
-    rolling_volatility = np.array([returns[i:i+m].std() for i in range(0, returns.shape[0]-m)])
-    return rolling_volatility
-
-def evaluate_spread(p_b, p_a):
-    '''This function evaluates the spread between the bid and ask sides of the order book.
-    The spread is defined as the difference between the best ask price and the best bid price.
-    
-    Parameters
-    ----------
-    p_b : numpy array
-        Bid prices.
-    p_a : numpy array
-        Ask prices.
-        
-    Returns
-    -------
-    spread : numpy array
-        Array containing the spread for each time step.'''
-    
-    spread = p_a - p_b
-    return spread
-
-def input_generation(returns, imbalance, spread, window_size, condition_size):
-    '''This function generates the input for the GAN. The input is a multivariate time series
-    composed by the returns, the imbalance and the spread. The function returns a numpy array
-    containing the input data.
-    
-    Parameters
-    ----------
-    returns : numpy array
-        Array containing the returns.
-    imbalance : numpy array
-        Array containing the imbalance.
-    spread : numpy array
-        Array containing the spread.
-    window_size : int
-        Length of the sliding window.
-    condition_size : int
-        Length of the condition.
-    
-    Returns
-    -------
-    input_data : numpy array
-        Array containing the input data.'''
-    
-    input_data = np.zeros((returns.shape[0] - window_size, window_size, returns.shape[1] + imbalance.shape[1] + spread.shape[1]))
-    for i in range(returns.shape[0] - window_size):
-        input_data[i, :, :returns.shape[1]] = returns[i:i+window_size, :]
-        input_data[i, :, returns.shape[1]:returns.shape[1]+imbalance.shape[1]] = imbalance[i:i+window_size, :]
-        input_data[i, :, returns.shape[1]+imbalance.shape[1]:] = spread[i:i+window_size, :]
-    return input_data
-
-
-@nb.jit(nopython=True)
-def divide_data_condition_input(data, condition_size):
-    '''Divide the data into condition and input data. The condition data is the data that
-    is used to condition the GAN
+    """Divide the time series into windows of length window_size, each shifted by one time step.
     
     Parameters
     ----------
     data : numpy array or list
         Array containing the data (like training data for instance).
-    condition_size : int
-        Length of the condition.
+    window_size : int
+        Length of the window.
     
     Returns
     -------
-    condition : list
-        Array containing the condition data.
-    input_data : list
-        Array containing the input data.'''
-    
-    condition = []
-    input_data = []
-    for window in data:
-        condition.append(window[:condition_size, :])
-        input_data.append(window[condition_size:, :])
+    windows : list
+        List of the windows."""
 
-    return condition, input_data
-
-def parallel_divide_data(data, condition_size):
-    num_workers = 4
-    partial_size = len(data) // num_workers
-    with Pool(num_workers) as p:
-        results = p.starmap(divide_data_condition_input, [(data[i*partial_size : (i+1)*partial_size], condition_size) for i in range(num_workers)])
-    
-    condition = np.concatenate([result[0] for result in results])
-    input_data = np.concatenate([result[1] for result in results])
-    return condition, input_data
+    windows = []
+    for i in range(len(data) - window_size + 1):
+        windows.append(data[i:i+window_size, :])
+    return windows
 
 def sliding_windows_stat(data):
     '''This function computes the statistics of the time intervals between two consecutive
@@ -256,27 +192,58 @@ def divide_vector(vector, N):
         subvectors.append(vector[(i+1)*length:])
     return subvectors
 
-def fast_autocorrelation(x, alpha=0.05):
-    n = len(x)
-    x = np.pad(x, (0, n), mode='constant')  # Zero padding
-    f = np.fft.fft(x)
-    p = np.absolute(f)**2
-    r = np.fft.ifft(p)
-    r = np.real(r)[:n]
-    r = r / np.max(r)  # Normalize
-    lag_no_corr = np.where(r < alpha)[0][0]
+def preprocessing_message_df(message_df, discard_time, sampling_freq):
+    '''This function takes as input the message dataframe provided by LOBSTER.com and preprocessed via
+    rename_columns. It performs the following operations:
+    - Discard the first and last rows of the dataframe, since they are likely "non stationary"
+    - Sample the dataframe every f events, where f is the sampling frequency
+    - Reset the index
+    - Drop the columns Order ID and Time
+    
+    Parameters
+    ----------
+    message_df : pandas dataframe
+        Message dataframe preprocessed via rename_columns.
+    discard_time : int
+        Number of seconds to discard from the beginning and the end of the dataframe.
+    sampling_freq : int
+        Sampling frequency.
+    
+    Returns
+    -------
+    message_df : pandas dataframe
+        Preprocessed message dataframe.
+    message_df.index : pandas index
+        Index of the preprocessed message dataframe.
+    [k, l] : list
+        List of two indexes: one corresponds to the 30th minute of the day and the other to the 30-minute-to-end minute.
+    '''
+    # Check the Time column and find the index k such that (message['Time'][k] - message['Time'][0])=discard_time
+    start = message_df['Time'].values[0]
+    end = message_df['Time'].values[-1]
 
-    return r, lag_no_corr
+    for i in range(len(message_df)):
+        if message_df['Time'].values[i] - start >= discard_time:
+            k = i
+            break
+    
+    for i in range(len(message_df)):
+        if end - message_df['Time'].values[-i] >= discard_time:
+            l = len(message_df) - i
+            break
 
-def preprocessing_message_df(message_df, m=20000):
-    # Drop columns Order ID
+    # Discard the first k and the last l rows
+    message_df = message_df.iloc[k:l, :]
+    # Sample the orderbook every f events
+    message_df = message_df.iloc[::sampling_freq, :]
+    # Reset the index
+    message_df = message_df.reset_index(drop=True)
+    # Drop columns Order ID, Time
     message_df = message_df.drop(columns=['Order ID', 'Time'])
     # Filter by Event type equal to 1,2,3 or 4
     message_df = message_df[message_df['Event type'].isin([1,2,3,4])]
-    # Discard start and end of the day
-    message_df = message_df.iloc[m:-m]
 
-    return message_df, message_df.index
+    return message_df, message_df.index, [k, l]
 
 @nb.jit(nopython=True)
 def divide_into_overlapping_pieces(data, overlap_size, num_pieces):
@@ -296,6 +263,8 @@ def divide_into_overlapping_pieces(data, overlap_size, num_pieces):
     -------
     pieces : list of array_like
         The divided pieces.
+    data_length : int
+        The length of the data.
     """
     piece_size = int(len(data) / num_pieces + (1 - 1/num_pieces) * overlap_size)
     pieces = []
@@ -306,7 +275,11 @@ def divide_into_overlapping_pieces(data, overlap_size, num_pieces):
         else:
             end = len(data)
         pieces.append(data[start:end])
-    return pieces
+    
+    data_length = 0
+    for piece in pieces:
+        data_length += len(piece)
+    return pieces, data_length
 
 def train_test_split(data, train_size=0.75):
     """Split the data into training and test sets.
@@ -316,7 +289,7 @@ def train_test_split(data, train_size=0.75):
     data : array_like
         The data to be split.
     train_size : float
-        The fraction of the data to be used for training.
+        The fraction of the data to be used for training. Default is 0.75.
 
     Returns
     -------
@@ -340,26 +313,130 @@ def compute_accuracy(outputs):
         total_accuracy = tf.reduce_mean(tf.cast(tf.less(fake_output, 0.5), tf.float32))
     return total_accuracy
 
-def create_animated_gif(job_id, epoch, type_gen, type_disc, n_layers, data):
-    image_folder = f'plots/{job_id}_{type_gen}_{type_disc}_{n_layers}_{data}'
-    output_gif_path = f'{image_folder}/{job_id}_{epoch}.gif'
+def plot_samples(dataset, number_of_batches_plot, generator_model, features, T_real, T_condition, latent_dim, n_features_input, job_id, epoch, scaler, args, final=False):
+    '''This function plots the generated samples, together with the real one and the empirical distribution of the generated samples.'''
+    if final:
+        counter = f'{epoch}_final'
+    else:
+        counter = epoch
+    # Select randomly an index to start from
+    idx = np.random.randint(0, len(dataset)-number_of_batches_plot-1)
+    dataset = dataset.skip(idx)
+
+    # Check if the dataset is conditioned or not
+    for batch in dataset.take(1):
+        dim_batch = np.array(tf.shape(batch[0]))
+    if dim_batch[1] > 1: 
+        use_condition = True
+    else:
+        use_condition = False
+
+    # Create two lists to store the generated and real samples. 
+    # These list will be of shape (batch_size*number_of_batches_plot, T_real, n_features_input)
+    generated_samples = []
+    real_samples = []
+    c = 0
+
+    if use_condition == True:
+        for batch_condition, batch in dataset:
+            c += 1
+            batch_size = batch.shape[0]
+            noise = tf.random.normal([batch_size, T_real*latent_dim, n_features_input])
+            # gen_sample is a tensor of shape (batch_size, T_real, n_features_input)
+            # The generator model outputs a number of samples equal to the batch size
+            gen_sample = generator_model([noise, batch_condition], training=True)
+            batch = scaler.inverse_transform(tf.reshape(batch, [batch.shape[0], batch.shape[1]*batch.shape[2]])).reshape(batch.shape)
+            gen_sample = scaler.inverse_transform(tf.reshape(gen_sample, [gen_sample.shape[0], gen_sample.shape[1]*gen_sample.shape[2]])).reshape(gen_sample.shape)
+            # Append each sample to the lists
+            for i in range(gen_sample.shape[0]):
+                # All the appended samples will be of shape (T_real, n_features_input)
+                generated_samples.append(gen_sample[i, :, :])
+                real_samples.append(batch[i, :, :])
+            if c == number_of_batches_plot: break
+    else:
+        for batch in dataset:
+            c += 1
+            batch_size = batch.shape[0]
+            noise = tf.random.normal([batch_size, (T_real+T_condition)*latent_dim, n_features_input])
+            gen_sample = generator_model(noise, training=True)
+            batch = scaler.inverse_transform(tf.reshape(batch, [batch.shape[0], batch.shape[1]*batch.shape[2]])).reshape(batch.shape)
+            gen_sample = scaler.inverse_transform(tf.reshape(gen_sample, [gen_sample.shape[0], gen_sample.shape[1]*gen_sample.shape[2]])).reshape(gen_sample.shape)
+            for i in range(gen_sample.shape[0]):
+                generated_samples.append(gen_sample[i, :, :])
+                real_samples.append(batch[i, :, :])
+            if c == number_of_batches_plot: break
+    generated_samples = np.array(generated_samples)
+    real_samples = np.array(real_samples)
+    
+    # features = [f'Curve{i+1}' for i in range(n_features_input)]
+    if len(features) == 1:
+        generated_samples = generated_samples.flatten()
+        real_samples = real_samples.flatten()
+        plt.figure(figsize=(10, 5), tight_layout=True)
+        plt.plot(generated_samples, label='Generated', alpha=0.85)
+        plt.plot(real_samples, label='Real', alpha=0.85)
+        plt.title(f'Generated {features[0]}_{epoch}')
+        plt.xlabel('Time (Events)')
+        plt.legend()
+    else:
+        fig, axes = plt.subplots(n_features_input, 1, figsize=(10, 10), tight_layout=True)
+        fig1, axes1 = plt.subplots(n_features_input, 1, figsize=(10, 10), tight_layout=True)
+        for i, feature in enumerate(features):
+            # if feature == 'Price':
+            #     d_gen = np.diff(generated_samples[:, :, i].flatten()/100)
+            #     d_real = np.diff(real_samples[:, :, i].flatten()/100)
+            # else:
+            d_gen = generated_samples[:, :, i].flatten()
+            d_real = real_samples[:, :, i].flatten()
+            axes[i].plot(d_gen[:200], label='Generated', alpha=0.85)
+            axes[i].plot(d_real[:200], label='Real', alpha=0.85)
+            axes[i].set_title(f'Generated {feature}_{epoch}')
+            axes[i].legend()
+            axes1[i].hist(d_gen, bins=100, label='Generated', alpha=0.3)
+            axes1[i].hist(np.round(d_gen), bins=100, label='Generated rounded', alpha=0.85)
+            axes1[i].hist(d_real, bins=100, label='Real', alpha=0.85)
+            axes1[i].set_title(f'Generated {feature}_{epoch}')
+            axes1[i].legend()
+        axes[i].set_xlabel('Time (Events)')
+        axes1[i].set_xlabel('Values')
+    path = f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}'
+    fig.savefig(f'{path}/003_generated_samples_{counter}.png')
+    fig1.savefig(f'{path}/004_generated_samples_hist_{counter}.png')
+    plt.close()
+    return None
+
+def create_animated_gif(job_id):
+    '''This function takes as input the job id and creates an animated gif from the images
+    stored in the plots folder.'''
+    # Get the folder name
+    image_folder = [f for f in os.listdir('plots/') if f'{job_id}' in f]
+    if len(image_folder) > 1:
+        raise ValueError(f'There are more than one {job_id} folders in the plots folder')
+    image_folder = image_folder[0]
+    # Choose the output gif path
+    output_gif_path = f'plots/{image_folder}/002_{job_id}_0.gif'
+    c = 0
+    while os.path.exists(output_gif_path):
+        c += 1
+        output_gif_path = f'plots/{image_folder}/002_{job_id}_{c}.gif'
     
     # Get all files from the folder
-    image_files = [f for f in os.listdir(image_folder) if 'generated' in f]
+    image_files = [f for f in os.listdir(f'plots/{image_folder}') if 'hist' in f]
     logging.info(f'Creating animated GIF from {len(image_files)} images')
     
     image_files.sort()
+    logging.info(f'{image_files}')
     images = []
 
     # Open, append new images to the list, and close the file
     for image_file in image_files:
-        image_path = os.path.join(image_folder, image_file)
+        image_path = os.path.join(f'plots/{image_folder}', image_file)
         with Image.open(image_path) as img:
             images.append(img.copy())
 
     # Save the images as an animated GIF
     images[0].save(output_gif_path,
-                    save_all=True, append_images=images[1:], optimize=False, duration=100, loop=0)
+                    save_all=True, append_images=images[1:], optimize=False, duration=int(10000/len(images)), loop=0)
 
     # Close all the images in the list
     for img in images:
@@ -367,10 +444,27 @@ def create_animated_gif(job_id, epoch, type_gen, type_disc, n_layers, data):
 
     # Eliminate all the images
     for image_file in image_files:
-        os.remove(os.path.join(image_folder, image_file))
+        os.remove(os.path.join(f'plots/{image_folder}', image_file))
 
 
 def sin_wave(amplitude, omega, phi, change_amplitude=False):
+    '''This function generates a sine wave with the specified parameters.
+    
+    Parameters
+    ----------
+    amplitude : float
+        Amplitude of the sine wave.
+    omega : float
+        Frequency of the sine wave.
+    phi : float
+        Phase of the sine wave.
+    change_amplitude : bool, optional
+        If True, the amplitude of the sine wave will be modified every 3 periods. The default is False.
+    
+    Returns
+    -------
+    sine_wave : numpy array
+        Sine wave with the specified parameters.'''
     # Parameters
     num_periods = 1000  # Total number of periods to generate
     samples_per_period = 100  # Number of samples per period
@@ -400,8 +494,8 @@ def step_fun(freq):
     # Generate the step function
     step = np.zeros(time.shape)
     for t in range(len(time)):
-        if time[t] % (2 * np.pi) < np.pi/(freq*2):
-            step[t] = 1
+        if time[t] % (np.pi) < np.pi/(freq*2):
+            step[t] = np.random.randint(0, 5)
     return step
 
 def ar1():
@@ -445,6 +539,25 @@ def ar1_fit(data):
     else:
         logging.info(f"\tThe null hypothesis cannot be rejected")
     return None
+
+def anomaly_injection(message_df, anomaly_type):
+    '''This function takes as input a message dataframe and injects anomalies in it. There will be
+    two types of anomalies: the first one is the random submissions of enormous orders (buy or sell)
+    at a random price, while the second one consists in filling one side of the LOB with a lot of orders.'''
+    # Select the 1% of the data to inject anomalies
+    n_anomalies = int(len(message_df) * 0.01)
+    if anomaly_type == 'big_order':
+        # Select randomly the indices where to inject the big orders
+        indices = np.random.choice(len(message_df), n_anomalies, replace=False)
+        message_df.loc[indices]['Event type'] = 4
+        message_df.loc[indices]['Size'] = 100000
+    if anomaly_type == 'fill_side':
+        # Select randomly 10 consecutive indices where to inject the orders
+        index = np.random.choice(len(message_df)-11, 1)
+        message_df.loc[index: index+10]['Event type'] = 4
+        message_df.loc[index: index]['Size'] = 500
+        message_df.loc[index : index]['Direction'] = 1
+    return message_df
 
 
 
