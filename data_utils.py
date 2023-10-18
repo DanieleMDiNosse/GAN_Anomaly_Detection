@@ -15,6 +15,7 @@ from PIL import Image, ImageSequence
 from statsmodels.tsa.ar_model import AutoReg
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from scipy.stats import normaltest
+from scipy.optimize import minimize
 
 def rename_columns(dataframes_folder_path):
     '''This function takes as input the path of the folder containing the dataframes and renames the columns
@@ -312,6 +313,24 @@ def compute_accuracy(outputs):
         fake_output = outputs
         total_accuracy = tf.reduce_mean(tf.cast(tf.less(fake_output, 0.5), tf.float32))
     return total_accuracy
+
+def explore_latent_space_loss(candidate_noise, x_target, T_condition, generator):
+    candidate_gen = generator([candidate_noise, x_target[:T_condition, :]])
+    candidate_gen = tf.reshape(candidate_gen, [candidate_gen.shape[1], candidate_gen.shape[2]]).numpy()
+    corr = np.corrcoef(x_target[T_condition:, :], candidate_gen)[0, 1] # corrcoef returns a matrix
+    loss = 1 - corr
+    return loss
+
+def explore_latent_space(x_target, latent_dim, T_condition, T_gen, generator):
+    logging.info('Exploring the latent space...')
+    logging.info(f'x_target:\n\t{x_target}')
+    logging.info(f'x_target.shape:\n\t{x_target.shape}')
+    candidate_noise = np.random.normal(size=(1 , T_gen*latent_dim, x_target.shape[0]))
+    logging.info(f'candidate_noise:\n\t{candidate_noise}')
+    result = minimize(explore_latent_space_loss, candidate_noise, args=(x_target, T_condition, generator), method='L-BFGS-B')
+    logging.info(f'result:\n\t{result}')
+    return result.x
+
 
 def plot_samples(dataset, number_of_batches_plot, generator_model, features, T_real, T_condition, latent_dim, n_features_input, job_id, epoch, scaler, args, final=False):
     '''This function plots the generated samples, together with the real one and the empirical distribution of the generated samples.'''

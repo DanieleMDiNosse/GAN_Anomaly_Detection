@@ -61,8 +61,10 @@ if __name__ == '__main__':
     tf.debugging.set_log_device_placement(True)
    
     # Load the data
-    stock = 'TSLA'
-    date = '2015-01-01_2015-01-31_10'
+    # stock = 'TSLA'
+    # date = '2015-01-01_2015-01-31_10'
+    stock = 'MSFT'
+    date = '2018-04-01_2018-04-30_5'
 
     N = args.N_days
     logging.info(f'Number of days:\n\t{N}')
@@ -120,7 +122,7 @@ if __name__ == '__main__':
     for day in range(N):
         logging.info(f'######################### START DAY {day+1}/{N} #########################')
 
-        if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{day+1}.npy'):
+        if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{day+1}_.npy'):
             logging.info('\n[Input] ---------- PREPROCESSING ----------')
 
             data_input = message_dfs[day].values
@@ -198,7 +200,7 @@ if __name__ == '__main__':
             logging.info(f'condition_val shape:\n\t{condition_val.shape}')
             
             logging.info('Loading the scaler...')
-            scaler = load(f'scaler_{day+1}.joblib')
+            scaler = load(f'scaler_{day+1}_{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}.joblib')
             logging.info('Done.')
 
         logging.info(f"\nHYPERPARAMETERS:\n"
@@ -240,7 +242,7 @@ if __name__ == '__main__':
         metrics = {'discriminator_loss': [], 'gen_loss': [], 'real_disc_out': [], 'fake_disc_out': []}
 
         # Define checkpoint and checkpoint manager
-        checkpoint_prefix = f"models/{job_id}/"
+        checkpoint_prefix = f"models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}/"
         checkpoint = tf.train.Checkpoint(optimizer=optimizer,
                                         generator_model=generator_model,
                                         discriminator_model=discriminator_model)
@@ -323,6 +325,10 @@ if __name__ == '__main__':
                     logging.info(f"Early stopping on epoch {epoch}. Restoring best weights of epoch {epoch-patience}...")
                     generator_model.set_weights(best_gen_weights)  # restore best weights
                     discriminator_model.set_weights(best_disc_weights)
+                    # Save the models
+                    logging.info('Saving the models...')
+                    generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}/generator_model_{epoch-patience}.h5')
+                    discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}/discriminator_model_{epoch-patience}.h5')
                     logging.info('Plotting final generated samples...')
 
                     if args.condition == True:
