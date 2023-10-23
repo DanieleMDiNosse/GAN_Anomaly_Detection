@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import tensorflow as tf
-# Change the environment variable TF_CPP_MIN_LOG_LEVEL to 2 to avoid the messages about the compilation of the CUDA code
+# Change the environment variable TF_CPP_MIN_LOG_LEVEL to 2 to avoid the orderbooks about the compilation of the CUDA code
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 from data_utils import *
 from sklearn.preprocessing import StandardScaler
@@ -14,6 +14,7 @@ import logging
 # from tensorflow.keras.utils import plot_model
 from model_utils import *
 from joblib import dump, load
+import math
 
 
 if __name__ == '__main__':
@@ -22,7 +23,6 @@ if __name__ == '__main__':
                         composed by a sliding window that shifts by one time step each time.''')
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
-    parser.add_argument('-d', '--data', type=str, help='Which data to use (orderbok, message)', default='message')
     parser.add_argument('-N', '--N_days', type=int, help='Number of the day to consider')
     parser.add_argument('-nlg', '--n_layers_gen', help='Number of generator layers', type=int)
     parser.add_argument('-nld', '--n_layers_disc', help='Number of discriminator layers', type=int)
@@ -67,6 +67,7 @@ if __name__ == '__main__':
     stock = 'MSFT'
     date = '2018-04-01_2018-04-30_5'
     N = args.N_days
+    depth = 3
 
     logging.info(f'Stock:\n\t{stock}')
     logging.info(f'Number of days:\n\t{N}')
@@ -81,33 +82,43 @@ if __name__ == '__main__':
             logging.info(f'\t{device}\n')
     
     # Folders creation
-    os.mkdir(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}') # Model architecture plots, metrics plots
-    os.mkdir(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}') # Generated samples
-    os.mkdir(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}') # Models
+    os.mkdir(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Model architecture plots, metrics plots
+    os.mkdir(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Generated samples
+    os.mkdir(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Models
     
-    # Read the message dataframes
+    # Read the dataframes
     dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
+
+    orderbook_df_paths = [path for path in dataframes_paths if 'orderbook' in path]
+    orderbook_df_paths.sort()
+    orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][:N]
+
     message_df_paths = [path for path in dataframes_paths if 'message' in path]
     message_df_paths.sort()
     message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][:N]
 
-    # Preprocess the data using preprocessing_message_df. This function performs the following operations:
-    # 1. Discard the first and last 30 minutes of the day
-    # 2. Sample the data at a given frequency
-    # 3. Drop the columns that are not needed (Order ID, Time)
-    # 4. Filter Event types considering only 1,2,3,4
-    res = np.array([preprocessing_message_df(df, discard_time=1800, sampling_freq=40) for df in message_dfs], dtype=object)
-    message_dfs, indexes, discarded_time = res[:,0], res[:, 1], res[:, 2]
+    # Preprocess the data using preprocessing_orderbook_df
+    orderbook_dfs = [preprocessing_orderbook_df(df, msg, discard_time=1800, sampling_freq=40, n_levels=depth) for df, msg in zip(orderbook_dfs, message_dfs)]
     # Merge all the dataframes into a single one
-    message_df = pd.concat(message_dfs, ignore_index=True)
-    logging.info(f'Discarded time (sod, eod):\n\t{discarded_time}')
+    orderbook_df = pd.concat(orderbook_dfs, ignore_index=True)
+    logging.info(f'orderbook columns:\n{orderbook_df.columns}')
+    bid_prices, bid_volumes, ask_prices, ask_volumes = prices_and_volumes(orderbook_df)
+    volumes_ask, volumes_bid = volumes_for_imbalance(ask_prices, bid_prices, ask_volumes, bid_volumes, depth)
+    orderbook_df = pd.DataFrame()
+    for i in range(depth):
+        orderbook_df[f'volumes_ask_{i+1}'] = volumes_ask[:, i]
+        orderbook_df[f'volumes_bid_{i+1}'] = volumes_bid[:, i]
+    # orderbook_df = pd.DataFrame({f'volumes_ask_1': volumes_ask[:, 0], 'volumes_ask_2': volumes_ask[:, 1], 'volumes_ask_3': volumes_ask[:, 2], 'volumes_ask_4': volumes_ask[:, 3], 'volumes_bid_1': volumes_bid[:, 0], 'volumes_bid_2': volumes_bid[:, 1], 'volumes_bid_3': volumes_bid[:, 2], 'volumes_bid_4': volumes_bid[:, 3]})
+    # Normalize the data via sqrt
+    orderbook_df = orderbook_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x)))
+    # logging.info(f'Discarded time (sod, eod):\n\t{discarded_time}')
 
     # Define the parameters of the GAN. Some of them are set via argparse
     # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
     T_condition = args.T_condition
     window_size = T_condition + 1
     T_real = window_size - T_condition
-    n_features_input = message_dfs[0].shape[1]
+    n_features_input = orderbook_df.shape[1]
     latent_dim = 10
     n_epochs = 20000
     batch_size = 32
@@ -126,11 +137,10 @@ if __name__ == '__main__':
     # for day in range(N):
     # logging.info(f'######################### START DAY {day+1}/{N} #########################')
 
-    if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{N}days_.npy'):
+    if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{N}days_orderbook_.npy'):
         logging.info('\n[Input] ---------- PREPROCESSING ----------')
 
-        # data_input = message_dfs[day].values
-        data_input = message_df.values
+        data_input = orderbook_df.values
 
         # Divide input data into overlapping pieces
         sub_data, length = divide_into_overlapping_pieces(data_input, window_size, num_pieces)
@@ -140,19 +150,19 @@ if __name__ == '__main__':
 
         logging.info(f'Number of windows: {length}')
 
-        # Create a scaler object to scale the data
-        scaler = StandardScaler()
-        logging.info(f'Memorize "sub" estimates of mean and variance...')
-        for piece_idx, data in enumerate(sub_data):
-            logging.info(f'\t{piece_idx+1}/{num_pieces}')
-            # The scaler is updated with the data of each piece
-            scaler.partial_fit(data)
-        logging.info('Done.')
+        # # Create a scaler object to scale the data
+        # scaler = StandardScaler()
+        # logging.info(f'Memorize "sub" estimates of mean and variance...')
+        # for piece_idx, data in enumerate(sub_data):
+        #     logging.info(f'\t{piece_idx+1}/{num_pieces}')
+        #     # The scaler is updated with the data of each piece
+        #     scaler.partial_fit(data)
+        # logging.info('Done.')
 
         # save the scaler
-        logging.info('Save the scaler...')
-        dump(scaler, f'scaler_{N}days.joblib')
-        logging.info('Done.')
+        # logging.info('Save the scaler...')
+        # dump(scaler, f'scaler_{N}days_orderbook.joblib')
+        # logging.info('Done.')
 
         # Create a memmap to store the scaled data.
         final_shape = (length, window_size, n_features_input)
@@ -164,8 +174,8 @@ if __name__ == '__main__':
             logging.info(f'\t{piece_idx+1}/{num_pieces}')
             # Here the scaling is performed and the resulting scaled data is assign divided into windows
             # and assigned to the memory mapped vector
-            scaled_data = scaler.transform(data.reshape(-1, data.shape[-1])).reshape(data.shape)
-            windows = np.array(divide_into_windows(scaled_data, window_size))
+            #scaled_data = scaler.transform(data.reshape(-1, data.shape[-1])).reshape(data.shape)
+            windows = np.array(divide_into_windows(data, window_size))
             logging.info(f'\twindows shape: {windows.shape}')
             end_idx = start_idx + windows.shape[0]
             fp[start_idx:end_idx] = windows
@@ -185,19 +195,19 @@ if __name__ == '__main__':
             logging.info('Done.')
 
         logging.info('\nSave the files...')
-        np.save(f'../data/condition_train_{stock}_{window_size}_{N}days.npy', condition_train)
-        np.save(f'../data/condition_val_{stock}_{window_size}_{N}days.npy', condition_val)
-        np.save(f'../data/input_train_{stock}_{window_size}_{N}days.npy', input_train)
-        np.save(f'../data/input_val_{stock}_{window_size}_{N}days.npy', input_val)
+        np.save(f'../data/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', condition_train)
+        np.save(f'../data/condition_val_{stock}_{window_size}_{N}days_orderbook.npy', condition_val)
+        np.save(f'../data/input_train_{stock}_{window_size}_{N}days_orderbook.npy', input_train)
+        np.save(f'../data/input_val_{stock}_{window_size}_{N}days_orderbook.npy', input_val)
         logging.info('Done.')
 
         logging.info('\n[Input] ---------- DONE ----------')
     else:
         logging.info('Loading input_train, input_validation and input_test sets...')
-        input_train = np.load(f'../data/input_train_{stock}_{window_size}_{N}days.npy', mmap_mode='r')
-        input_val = np.load(f'../data/input_val_{stock}_{window_size}_{N}days.npy', mmap_mode='r')
-        condition_train = np.load(f'../data/condition_train_{stock}_{window_size}_{N}days.npy', mmap_mode='r')
-        condition_val = np.load(f'../data/condition_val_{stock}_{window_size}_{N}days.npy', mmap_mode='r')
+        input_train = np.load(f'../data/input_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
+        input_val = np.load(f'../data/input_val_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
+        condition_train = np.load(f'../data/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
+        condition_val = np.load(f'../data/condition_val_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
         
         logging.info(f'input_train shape:\n\t{input_train.shape}')
         logging.info(f'condition_train shape:\n\t{condition_train.shape}')
@@ -205,7 +215,7 @@ if __name__ == '__main__':
         logging.info(f'condition_val shape:\n\t{condition_val.shape}')
         
         logging.info('Loading the scaler...')
-        scaler = load(f'scaler_{N}days.joblib')
+        scaler = load(f'scaler_{N}days_orderbook.joblib')
         logging.info('Done.')
 
     logging.info(f"\nHYPERPARAMETERS:\n"
@@ -249,7 +259,7 @@ if __name__ == '__main__':
     metrics = {'discriminator_loss': [], 'gen_loss': [], 'real_disc_out': [], 'fake_disc_out': []}
 
     # Define checkpoint and checkpoint manager
-    checkpoint_prefix = f"models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}/"
+    checkpoint_prefix = f"models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/"
     checkpoint = tf.train.Checkpoint(optimizer=optimizer,
                                     generator_model=generator_model,
                                     discriminator_model=discriminator_model)
@@ -278,8 +288,8 @@ if __name__ == '__main__':
                 j += 1
                 batch_size = batch_real_samples.shape[0]
                 generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_real, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
-                if j == 10:
-                    break
+                # if j == 10:
+                #     break
         else:
             for batch_real_samples in dataset_train:
                 j += 1
@@ -291,8 +301,8 @@ if __name__ == '__main__':
 
         logging.info('Creating a time series with the generated samples...')
         number_of_batches_plot = 100 
-        features = message_df.columns
-        plot_samples(dataset_train, number_of_batches_plot, generator_model, features, T_real, T_condition, latent_dim, n_features_input, job_id, epoch, scaler, args, final=False)
+        features = orderbook_df.columns
+        plot_samples(dataset_train, number_of_batches_plot, generator_model, features, T_real, T_condition, latent_dim, n_features_input, job_id, epoch, None, args, final=False)
         logging.info('Done')
 
         if epoch > 50:
@@ -342,8 +352,8 @@ if __name__ == '__main__':
                 discriminator_model.set_weights(best_disc_weights)
                 # Save the models
                 logging.info('Saving the models...')
-                generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}/generator_model_{epoch-patience}.h5')
-                discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}/discriminator_model_{epoch-patience}.h5')
+                generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model_{epoch-patience}.h5')
+                discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model_{epoch-patience}.h5')
                 logging.info('Plotting final generated samples...')
 
                 if args.condition == True:
@@ -367,6 +377,6 @@ if __name__ == '__main__':
             plt.xlabel('Epoch')
             plt.ylabel('Wasserstein distance')
             plt.title(f'Mean over the features of the Wasserstein distances')
-            plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}/000_wasserstein_distance.png')
+            plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/000_wasserstein_distance.png')
 
         # logging.info(f'##################### END DAY {day+1}/{N} #####################\n')

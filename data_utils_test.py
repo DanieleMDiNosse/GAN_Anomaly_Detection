@@ -6,6 +6,19 @@ import tensorflow as tf
 from data_utils import *
 import unittest
 
+class LoggingTestResult(unittest.TestResult):
+    def addSuccess(self, test):
+        logger.info(f"Test {test} PASSED.")
+        super().addSuccess(test)
+
+    def addError(self, test, err):
+        logger.error(f"Test {test} ERROR. {err}")
+        super().addError(test, err)
+
+    def addFailure(self, test, err):
+        logger.error(f"Test {test} FAILED. {err}")
+        super().addFailure(test, err)
+
 class TestDataUtils(unittest.TestCase):
 
     def test_divide_into_overlapping_pieces(self):
@@ -115,7 +128,7 @@ class TestDataUtils(unittest.TestCase):
         message_df = pd.DataFrame(data)
         
         # Test 1: Basic functionality.
-        processed_df, index = preprocessing_message_df(message_df)
+        processed_df, index = preprocessing_message_df(message_df, 1800, 40)
         
         # Check if 'Order ID' and 'Time' columns are dropped.
         self.assertTrue('Order ID' not in processed_df.columns)
@@ -166,9 +179,37 @@ class TestDataUtils(unittest.TestCase):
             compute_accuracy([fake_output, 'invalid'])
         except TypeError as e:
             self.assertTrue("Cannot convert 0.5 to EagerTensor of dtype string" in str(e))
+        
+    def test_transform_and_reshape(self):
+        # Sample input
+        tensor = tf.constant([[[-1.5, 2.5], [3.5, -4.5]], [[5.5, -6.5], [-7.5, 8.5]]])
+        T = 2
+        n_features = 2
+
+        # Transform the tensor
+        transformed_tensor = transform_and_reshape(tensor, T, n_features)
+
+        # Check the output shape
+        self.assertEqual(transformed_tensor.shape, (2, 2, 2))
+
+        # Check that each element is squared and sign is preserved
+        for i in range(tensor.shape[0]):
+            for j in range(tensor.shape[1]):
+                for k in range(tensor.shape[2]):
+                    expected_val = tensor[i, j, k].numpy() ** 2 * math.copysign(1, tensor[i, j, k].numpy())
+                    self.assertEqual(transformed_tensor[i, j, k].numpy(), expected_val)
 
 if __name__ == '__main__':
-    unittest.main()
+    if os.getenv("PBS_JOBID") != None:
+        job_id = os.getenv("PBS_JOBID")
+    else:
+        job_id = os.getpid()
+
+    logging.basicConfig(filename=f'output_{job_id}.log', level=logging.INFO, 
+                    format='%(asctime)s [%(levelname)s]: %(message)s')
+    logger = logging.getLogger()
+
+    unittest.main(testRunner=unittest.TextTestRunner(resultclass=LoggingTestResult))
 
 
 

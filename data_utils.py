@@ -15,6 +15,7 @@ from PIL import Image, ImageSequence
 from statsmodels.tsa.ar_model import AutoReg
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from scipy.stats import normaltest
+import math
 from scipy.optimize import minimize
 
 def rename_columns(dataframes_folder_path):
@@ -82,31 +83,67 @@ def preprocessing_orderbook_df(orderbook, message, sampling_freq, discard_time, 
     # Discard the first k and the last l rows
     orderbook = orderbook.iloc[k:l, :]
     # Sample the orderbook every f events and take only the first n_levels levels
-    orderbook = orderbook.iloc[::sampling_freq, :2*n_levels]
+    orderbook = orderbook.iloc[::sampling_freq, :4*n_levels]
     # Reset the index
     orderbook = orderbook.reset_index(drop=True)
     return orderbook
 
-def lob_reconstruction(N, tick, bid_prices, bid_volumes, ask_prices, ask_volumes):
-    n_columns = bid_prices.shape[1]
-    m, M = bid_prices.min().min(), ask_prices.max().max()
-    for event in tqdm(range(N), desc='Computing LOB snapshots'):
-        # Create the price and volume arrays
-        p_line = np.arange(m, M+tick, tick)
-        volumes = np.zeros_like(p_line)
+# def lob_reconstruction(N, tick, bid_prices, bid_volumes, ask_prices, ask_volumes):
+#     n_columns = bid_prices.shape[1]
+#     m, M = bid_prices.min().min(), ask_prices.max().max()
+#     for event in tqdm(range(N), desc='Computing LOB snapshots'):
+#         # Create the price and volume arrays
+#         p_line = np.arange(m, M+tick, tick)
+#         volumes = np.zeros_like(p_line)
 
-        # Create two dictionaries to store the bid and ask prices keys and volumes as values
-        d_ask = {ask_prices[event][i]: ask_volumes[event][i] for i in range(int(n_columns))}
-        d_bid = {bid_prices[event][i]: -bid_volumes[event][i] for i in range(int(n_columns))}
+#         # Create two dictionaries to store the bid and ask prices keys and volumes as values
+#         d_ask = {ask_prices[event][i]: ask_volumes[event][i] for i in range(int(n_columns))}
+#         d_bid = {bid_prices[event][i]: -bid_volumes[event][i] for i in range(int(n_columns))}
 
-        # Create two boolean arrays to select the prices in the p_line array that are also in the bid and ask prices
-        mask_bid, mask_ask = np.in1d(p_line, list(d_bid.keys())), np.in1d(p_line, list(d_ask.keys()))
+#         # Create two boolean arrays to select the prices in the p_line array that are also in the bid and ask prices
+#         mask_bid, mask_ask = np.in1d(p_line, list(d_bid.keys())), np.in1d(p_line, list(d_ask.keys()))
 
-        # Assign to the volumes array the volumes corresponding to the the bid and ask prices
-        volumes[np.where(mask_bid)] = list(d_bid.values())
-        volumes[np.where(mask_ask)] = list(d_ask.values())
+#         # Assign to the volumes array the volumes corresponding to the the bid and ask prices
+#         volumes[np.where(mask_bid)] = list(d_bid.values())
+#         volumes[np.where(mask_ask)] = list(d_ask.values())
     
-    return p_line, volumes
+#     return p_line, volumes
+
+def volumes_for_imbalance(ask_prices, bid_prices, ask_volumes, bid_volumes, depth):
+    '''This function takes as input the bid and ask prices and volumes and returns the volumes at each price level
+    for the first depth levels. Note that not all the levels are occupied.
+    
+    Parameters
+    ----------
+    ask_prices : numpy array
+        Array containing the ask prices.
+    bid_prices : numpy array
+        Array containing the bid prices.
+    ask_volumes : numpy array
+        Array containing the ask volumes.
+    bid_volumes : numpy array
+        Array containing the bid volumes.
+    depth : int
+        Depth of the LOB.'''
+
+    volume_ask = np.zeros(shape=(ask_prices.shape[0], depth))
+    volume_bid = np.zeros(shape=(ask_prices.shape[0], depth))
+    for row in range(ask_prices.shape[0]):
+        start_ask = ask_prices[row, 0]
+        start_bid = bid_prices[row, 0]
+        volume_ask[row, 0] = ask_volumes[row, 0] # volume at best
+        volume_bid[row, 0] = bid_volumes[row, 0] # volume at best
+        for i in range(1,depth): #from the 2th until the 4th tick price level
+            if ask_prices[row, i] == start_ask + 100*i: # check if the next occupied level is one tick ahead
+                volume_ask[row, i] = ask_volumes[row, i]
+            else:
+                volume_ask[row, i] = 0
+
+            if bid_prices[row, i] == start_bid - 100*i: # check if the next occupied level is one tick before
+                volume_bid[row, i] = bid_volumes[row, i]
+            else:
+                volume_bid[row, i] = 0
+    return volume_ask, -volume_bid
 
 
 @nb.jit(nopython=True)
@@ -314,22 +351,37 @@ def compute_accuracy(outputs):
         total_accuracy = tf.reduce_mean(tf.cast(tf.less(fake_output, 0.5), tf.float32))
     return total_accuracy
 
-def explore_latent_space_loss(candidate_noise, x_target, T_condition, generator):
-    candidate_gen = generator([candidate_noise, x_target[:T_condition, :]])
+def explore_latent_space_loss(candidate_noise, condition, x_target, generator):
+    candidate_gen = generator([candidate_noise, condition])
     candidate_gen = tf.reshape(candidate_gen, [candidate_gen.shape[1], candidate_gen.shape[2]]).numpy()
-    corr = np.corrcoef(x_target[T_condition:, :], candidate_gen)[0, 1] # corrcoef returns a matrix
+    corr = np.corrcoef(x_target, candidate_gen)[0, 1] # corrcoef returns a matrix
     loss = 1 - corr
     return loss
 
-def explore_latent_space(x_target, latent_dim, T_condition, T_gen, generator):
+def explore_latent_space(x_target, condition, latent_dim, T_gen, generator):
     logging.info('Exploring the latent space...')
-    logging.info(f'x_target:\n\t{x_target}')
+    # logging.info(f'x_target:\n\t{x_target}')
     logging.info(f'x_target.shape:\n\t{x_target.shape}')
-    candidate_noise = np.random.normal(size=(1 , T_gen*latent_dim, x_target.shape[0]))
-    logging.info(f'candidate_noise:\n\t{candidate_noise}')
-    result = minimize(explore_latent_space_loss, candidate_noise, args=(x_target, T_condition, generator), method='L-BFGS-B')
+    candidate_noise = np.random.normal(size=(T_gen*latent_dim, x_target.shape[1]))
+    logging.info(f'candidate_noise.shape:\n\t{candidate_noise.shape}')
+    result = minimize(explore_latent_space_loss, candidate_noise, args=(condition, x_target, generator), method='L-BFGS-B')
     logging.info(f'result:\n\t{result}')
     return result.x
+
+def simple_rounding(n):
+    new_n = np.zeros_like(n)
+    for i,x in enumerate(n):
+        r = x%100
+        if r < 50:
+            new_n[i] = x - r
+        else:
+            new_n[i] = x + (100-r)
+    return new_n
+
+def transform_and_reshape(tensor, T_real, n_features):
+    tensor_flat = tf.reshape(tensor, [-1, T_real * n_features]).numpy()
+    tensor_flat = np.array([[x**2 * math.copysign(1, x) for x in row] for row in tensor_flat])
+    return tf.reshape(tensor_flat, [-1, T_real, n_features])
 
 
 def plot_samples(dataset, number_of_batches_plot, generator_model, features, T_real, T_condition, latent_dim, n_features_input, job_id, epoch, scaler, args, final=False):
@@ -364,8 +416,12 @@ def plot_samples(dataset, number_of_batches_plot, generator_model, features, T_r
             # gen_sample is a tensor of shape (batch_size, T_real, n_features_input)
             # The generator model outputs a number of samples equal to the batch size
             gen_sample = generator_model([noise, batch_condition], training=True)
-            batch = scaler.inverse_transform(tf.reshape(batch, [batch.shape[0], batch.shape[1]*batch.shape[2]])).reshape(batch.shape)
-            gen_sample = scaler.inverse_transform(tf.reshape(gen_sample, [gen_sample.shape[0], gen_sample.shape[1]*gen_sample.shape[2]])).reshape(gen_sample.shape)
+            if scaler == None:
+                gen_sample = transform_and_reshape(gen_sample, T_real, n_features_input)
+                batch = transform_and_reshape(batch, T_real, n_features_input)
+            else:
+                batch = scaler.inverse_transform(tf.reshape(batch, [batch.shape[0], batch.shape[1]*batch.shape[2]])).reshape(batch.shape)
+                gen_sample = scaler.inverse_transform(tf.reshape(gen_sample, [gen_sample.shape[0], gen_sample.shape[1]*gen_sample.shape[2]])).reshape(gen_sample.shape)
             # Append each sample to the lists
             for i in range(gen_sample.shape[0]):
                 # All the appended samples will be of shape (T_real, n_features_input)
@@ -401,12 +457,12 @@ def plot_samples(dataset, number_of_batches_plot, generator_model, features, T_r
         fig, axes = plt.subplots(n_features_input, 1, figsize=(10, 10), tight_layout=True)
         fig1, axes1 = plt.subplots(n_features_input, 1, figsize=(10, 10), tight_layout=True)
         for i, feature in enumerate(features):
-            # if feature == 'Price':
-            #     d_gen = np.diff(generated_samples[:, :, i].flatten()/100)
-            #     d_real = np.diff(real_samples[:, :, i].flatten()/100)
-            # else:
-            d_gen = generated_samples[:, :, i].flatten()
-            d_real = real_samples[:, :, i].flatten()
+            if feature == 'Price':
+                d_gen = simple_rounding(generated_samples[:, :, i].flatten())
+                d_real = simple_rounding(real_samples[:, :, i].flatten())
+            else:
+                d_gen = generated_samples[:, :, i].flatten()
+                d_real = real_samples[:, :, i].flatten()
             axes[i].plot(d_gen[:200], label='Generated', alpha=0.85)
             axes[i].plot(d_real[:200], label='Real', alpha=0.85)
             axes[i].set_title(f'Generated {feature}_{epoch}')
@@ -418,7 +474,7 @@ def plot_samples(dataset, number_of_batches_plot, generator_model, features, T_r
             axes1[i].legend()
         axes[i].set_xlabel('Time (Events)')
         axes1[i].set_xlabel('Values')
-    path = f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}'
+    path = f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}'
     fig.savefig(f'{path}/003_generated_samples_{counter}.png')
     fig1.savefig(f'{path}/004_generated_samples_hist_{counter}.png')
     plt.close()

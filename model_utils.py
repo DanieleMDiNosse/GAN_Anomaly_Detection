@@ -8,7 +8,7 @@ from data_utils import *
 from sklearn.preprocessing import StandardScaler
 import argparse
 import logging
-# from tensorflow.keras.utils import plot_model
+from tensorflow.keras.utils import plot_model
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 from tensorflow.keras import layers
@@ -28,7 +28,8 @@ def conv_block(xi, filters, kernel_size, strides, padding, skip_connections):
 def lstm_block(xi, units, skip_connections):
     x = layers.LSTM(units=units, return_sequences=True)(xi)
     x = layers.Dropout(0.2)(x)
-    xo = layers.LSTM(units=units, return_sequences=True)(x)
+    x = layers.LSTM(units=units, return_sequences=True)(x)
+    xo = layers.BatchNormalization()(x)
     if skip_connections == True:
         x = layers.Concatenate()([xi, xo])
     return x
@@ -36,7 +37,8 @@ def lstm_block(xi, units, skip_connections):
 def dense_block(xi, units, skip_connections):
     x = layers.Dense(units=units)(xi)
     x = layers.LeakyReLU()(x)
-    xo = layers.Dropout(0.2)(x)
+    x = layers.Dropout(0.2)(x)
+    xo = layers.BatchNormalization()(x)
     if skip_connections == True:
         x = layers.Concatenate()([xi, xo])
     return x
@@ -50,12 +52,13 @@ def tcn_block(xi, units, skip_connections):
 
 def build_discriminator(n_layers, type, skip_connections, T_real, T_condition, num_features_input, activate_condition=False):
 
+    n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
+
     if activate_condition == True:
         condition = layers.Input(shape=(T_condition, num_features_input), name='condition')
         x_c = layers.Flatten()(condition)
-        n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
         for i in range(n_layers):
-            x_c = dense_block(x_c, units=n_nodes[i], skip_connections=skip_connections)
+            x_c = dense_block(x_c, units=n_nodes[i], skip_connections=False)
     else:
         T_real = T_real + T_condition
 
@@ -73,7 +76,6 @@ def build_discriminator(n_layers, type, skip_connections, T_real, T_condition, n
 
     if type == 'dense':
         x = layers.Flatten()(input)
-        n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
         for i in range(n_layers):
             x = dense_block(x, units=n_nodes[i], skip_connections=skip_connections)
     
@@ -83,13 +85,13 @@ def build_discriminator(n_layers, type, skip_connections, T_real, T_condition, n
             x = tcn_block(x, units=n_nodes[i], skip_connections=skip_connections)
 
     xi = layers.Flatten()(x)
-    x = layers.Dense(16)(xi)
+    x = layers.Dense(32)(xi)
 
-    if skip_connections == True:
-        x = layers.Concatenate()([xi, x])
+    # if skip_connections == True:
+    #     x = layers.Concatenate()([xi, x])
 
     if activate_condition == True:
-        xi = layers.Concatenate()([x, x_c])
+        x = layers.Concatenate()([x, x_c])
 
     output = layers.Dense(1, activation='sigmoid')(x)
     
@@ -97,6 +99,7 @@ def build_discriminator(n_layers, type, skip_connections, T_real, T_condition, n
         discriminator = tf.keras.Model([input, condition], output, name='discriminator')
     else:
         discriminator = tf.keras.Model([input], output, name='discriminator')
+    # plot_model(discriminator, to_file='discriminator_plot.png', show_shapes=True, show_layer_names=True)
     return discriminator
 
 def build_generator(n_layers, type, skip_connections, T_real, T_condition, num_features_input, latent_dim, activate_condition=False):
@@ -107,7 +110,7 @@ def build_generator(n_layers, type, skip_connections, T_real, T_condition, num_f
         condition = layers.Input(shape=(T_condition, num_features_input), name='condition')
         x_c = layers.Flatten()(condition)
         for i in range(n_layers):
-            x_c = dense_block(x_c, units=n_nodes[i], skip_connections=skip_connections)
+            x_c = dense_block(x_c, units=n_nodes[i], skip_connections=False)
     else:
         T_real = T_real + T_condition
 
@@ -146,6 +149,8 @@ def build_generator(n_layers, type, skip_connections, T_real, T_condition, num_f
         generator_model = Model([input, condition], output, name='generator_model')
     else:
         generator_model = Model([input], output, name='generator_model')
+    
+    # plot_model(generator_model, to_file='gen.png', show_shapes=True, show_layer_names=True)
     return generator_model
 
 def train_step(real_samples, condition, generator_model, discriminator_model, optimizer, loss, T_real, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, use_condition, args):
@@ -239,7 +244,7 @@ def compute_discriminator_loss(real_output, fake_output):
     return total_disc_loss
 
 def compute_generator_loss(fake_output):
-    binary_crossentropy = tf.keras.losses.BinaryCrossentropy(from_logits=False)
+    # binary_crossentropy = tf.keras.losses.BinaryCrossentropy(from_logits=False)
     return -tf.math.log(fake_output + 1e-5)
     # return binary_crossentropy(tf.ones_like(fake_output), fake_output)
 
@@ -290,7 +295,7 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
     plt.xlabel('Batch')
     plt.ylabel('Loss')
     plt.legend()
-    plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}/000_losses.png')
+    plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/000_losses.png')
 
     plt.figure(figsize=(10, 5), tight_layout=True)
     plt.plot(metrics['real_disc_out'], label='Real', alpha=0.7)
@@ -298,7 +303,7 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
     plt.xlabel('Batch')
     plt.ylabel('Discriminator output')
     plt.legend()
-    plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}/001_disc_output.png')
+    plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/001_disc_output.png')
 
     # if generated_samples.shape[1] == 1:
     #     plt.figure(figsize=(10, 5), tight_layout=True)
@@ -346,10 +351,12 @@ if __name__ == '__main__':
                         help=("Provide logging level. Example --log debug', default='info'"))
     parser.add_argument('-d', '--data', type=str, help='Which data to use (sine, step)')
     parser.add_argument('-nd', '--num_dim', help='Number of dimensions of the data', default=1, type=int)
-    parser.add_argument('-nl', '--n_layers', help='Type of model (conv, lstm, dense)', type=int)
+    parser.add_argument('-nlg', '--n_layers_gen', help='Number of hidden layers in the generator', type=int)
+    parser.add_argument('-nld', '--n_layers_disc', help='Number of hidden layers in the discriminator', type=int)
     parser.add_argument('-tg', '--type_gen', help='Type of generator model (conv, lstm, dense)', type=str)
     parser.add_argument('-td', '--type_disc', help='Type of discriminator model (conv, lstm, dense)', type=str)
     parser.add_argument('-c', '--condition', action='store_true', help='Conditioning on the first T_condition time steps')
+    parser.add_argument('-Tc', '--T_condition', help='Number of time steps to condition on', type=int, default=1)
     parser.add_argument('-ls', '--loss', help='Loss function (original, wasserstein)', type=str, default='original')
 
     args = parser.parse_args()
@@ -364,7 +371,7 @@ if __name__ == '__main__':
     else:
         job_id = os.getpid()
 
-    logging.basicConfig(filename=f'output_{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}.log', format='%(message)s', level=levels[args.log])
+    logging.basicConfig(filename=f'output_{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}.log', format='%(message)s', level=levels[args.log])
 
     logger = tf.get_logger()
     logger.setLevel('ERROR')
@@ -389,9 +396,9 @@ if __name__ == '__main__':
             logging.info(f'\t{device}\n')
     
     # Folders creation
-    os.mkdir(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}') # Model architecture plots, metrics plots
-    os.mkdir(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}') # Generated samples
-    os.mkdir(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}') # Models
+    os.mkdir(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Model architecture plots, metrics plots
+    os.mkdir(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Generated samples
+    os.mkdir(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Models
 
     # Generate syntehtic data
     if args.data == 'sine':
@@ -409,7 +416,7 @@ if __name__ == '__main__':
     # Define the parameters of the GAN.
     # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
     window_size = 3
-    T_condition = 2
+    T_condition = args.T_condition
     T_real = window_size - T_condition
     n_features_input = input_train.shape[1]
     latent_dim = 10
@@ -419,7 +426,8 @@ if __name__ == '__main__':
     windows = np.array(divide_into_windows(input_train, window_size))
     #Scale the data along the last axis using StandardScaler
     scaler = StandardScaler()
-    windows = scaler.fit_transform(windows.reshape(windows.shape[0], windows.shape[1]*windows.shape[2])).reshape(windows.shape)
+    # windows = scaler.fit_transform(windows.reshape(windows.shape[0], windows.shape[1]*windows.shape[2])).reshape(windows.shape)
+    windows = scaler.fit_transform(windows.reshape(-1, windows.shape[-1])).reshape(windows.shape)
     logging.info(f'Windows shape:\n\t{windows.shape}')
 
     logging.info('\nSplit the condition data into train, validation sets...')
@@ -466,7 +474,7 @@ if __name__ == '__main__':
     metrics = {'discriminator_loss': [], 'gen_loss': [], 'real_disc_out': [], 'fake_disc_out': []}
 
     # Define checkpoint and checkpoint manager
-    checkpoint_prefix = f"models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.data}_{args.T_condition}_{args.loss}/"
+    checkpoint_prefix = f"models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/"
     checkpoint = tf.train.Checkpoint(optimizer=optimizer,
                                     generator_model=generator_model,
                                     discriminator_model=discriminator_model)
@@ -498,13 +506,15 @@ if __name__ == '__main__':
             for batch_condition, batch_real_samples in dataset_train:
                 j += 1
                 batch_size = batch_real_samples.shape[0]
-                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_real, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition)
+                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_real, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
+                # if j == 10:
+                #     break
         else:
             for batch_real_samples in dataset_train:
                 j += 1
                 batch_condition = np.zeros_like(batch_real_samples)
                 batch_size = batch_real_samples.shape[0]
-                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_real, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition)
+                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_real, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
         # Save the models via checkpoint
         checkpoint_manager.save()
     
@@ -592,7 +602,8 @@ if __name__ == '__main__':
 
         logging.info('Creating a time series with the generated samples...')
         number_of_batches_plot = 5
+        features = [f'Curve{i+1}' for i in range(args.num_dim)]
         # scale back the data
-        plot_samples(dataset_train, number_of_batches_plot, generator_model, T_real, T_condition, latent_dim, n_features_input, job_id, epoch, scaler)
+        plot_samples(dataset_train, number_of_batches_plot, generator_model, features, T_real, T_condition, latent_dim, n_features_input, job_id, epoch, scaler, args, final=False)
         logging.info('Done')
 
