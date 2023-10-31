@@ -18,8 +18,8 @@ from scipy.stats import wasserstein_distance
 
 def conv_block(xi, filters, kernel_size, strides, padding, skip_connections):
     x = layers.Conv2D(filters=filters, kernel_size=kernel_size, strides=strides, padding=padding)(xi)
-    x = layers.BatchNormalization()(x)
-    x = layers.LeakyReLU()(x)
+    # x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
     xo = layers.Dropout(0.2)(x)
     if skip_connections == True:
         x = layers.Concatenate()([xi, xo])
@@ -36,9 +36,9 @@ def lstm_block(xi, units, skip_connections):
 
 def dense_block(xi, units, skip_connections):
     x = layers.Dense(units=units)(xi)
-    x = layers.LeakyReLU()(x)
-    x = layers.Dropout(0.2)(x)
-    xo = layers.BatchNormalization()(x)
+    # x = layers.LeakyReLU()(x)
+    xo = layers.ReLU()(x)
+    # xo = layers.BatchNormalization()(xo)
     if skip_connections == True:
         x = layers.Concatenate()([xi, xo])
     return x
@@ -50,24 +50,30 @@ def tcn_block(xi, units, skip_connections):
         x = layers.Concatenate()([xi, xo])
     return x
 
-def build_discriminator(n_layers, type, skip_connections, T_real, T_condition, num_features_input, activate_condition=False):
+@tf.custom_gradient
+def round_ste(x):
+    def grad(dy):
+        return dy
+    return tf.round(x), grad
 
+def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, num_features_input, num_features_gen, activate_condition=False, loss='original'):
+    '''Build the discriminator model'''
     n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
 
     if activate_condition == True:
         condition = layers.Input(shape=(T_condition, num_features_input), name='condition')
         x_c = layers.Flatten()(condition)
         for i in range(n_layers):
-            x_c = dense_block(x_c, units=n_nodes[i], skip_connections=False)
+            x_c = dense_block(x_c, units=n_nodes[i], skip_connections=True)
     else:
-        T_real = T_real + T_condition
+        T_gen = T_gen + T_condition
 
-    input = layers.Input(shape=(T_real, num_features_input), name='input')
+    input = layers.Input(shape=(T_gen, num_features_gen), name='input')
 
     if type == 'conv':
-        x = layers.Reshape((T_real, num_features_input, 1))(input)
+        x = layers.Reshape((T_gen, num_features_gen, 1))(input)
         for i in range(n_layers):
-            x = conv_block(x, filters=n_nodes[i], kernel_size=(3,num_features_input), strides=1, padding='same', skip_connections=skip_connections)
+            x = conv_block(x, filters=n_nodes[i], kernel_size=(3,num_features_gen), strides=1, padding='same', skip_connections=skip_connections)
 
     if type == 'lstm':
         for i in range(n_layers):
@@ -78,9 +84,10 @@ def build_discriminator(n_layers, type, skip_connections, T_real, T_condition, n
         x = layers.Flatten()(input)
         for i in range(n_layers):
             x = dense_block(x, units=n_nodes[i], skip_connections=skip_connections)
+            x = layers.Dropout(0.2)(x)
     
     if type == 'tcn':
-        x = layers.Reshape((T_real, num_features_input, 1))(input)
+        x = layers.Reshape((T_gen, num_features_input, 1))(input)
         for i in range(n_layers):
             x = tcn_block(x, units=n_nodes[i], skip_connections=skip_connections)
 
@@ -93,7 +100,10 @@ def build_discriminator(n_layers, type, skip_connections, T_real, T_condition, n
     if activate_condition == True:
         x = layers.Concatenate()([x, x_c])
 
-    output = layers.Dense(1, activation='sigmoid')(x)
+    if loss == 'original':
+        output = layers.Dense(1, activation='sigmoid')(x)
+    elif loss == 'wasserstein':
+        output = layers.Dense(1)(x)
     
     if activate_condition == True:
         discriminator = tf.keras.Model([input, condition], output, name='discriminator')
@@ -102,22 +112,22 @@ def build_discriminator(n_layers, type, skip_connections, T_real, T_condition, n
     # plot_model(discriminator, to_file='discriminator_plot.png', show_shapes=True, show_layer_names=True)
     return discriminator
 
-def build_generator(n_layers, type, skip_connections, T_real, T_condition, num_features_input, latent_dim, activate_condition=False):
-
+def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_features_input, num_features_gen, latent_dim, activate_condition=False):
+    '''Build the generator model'''
     n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
 
     if activate_condition == True:
         condition = layers.Input(shape=(T_condition, num_features_input), name='condition')
         x_c = layers.Flatten()(condition)
         for i in range(n_layers):
-            x_c = dense_block(x_c, units=n_nodes[i], skip_connections=False)
+            x_c = dense_block(x_c, units=n_nodes[i], skip_connections=True)
     else:
-        T_real = T_real + T_condition
+        T_gen = T_gen + T_condition
 
-    input = layers.Input(shape=(T_real*latent_dim, num_features_input), name='input')
+    input = layers.Input(shape=(T_gen*latent_dim, num_features_gen), name='input')
 
     if type == 'conv':
-        x = layers.Reshape((T_real, latent_dim,  num_features_input))(input)
+        x = layers.Reshape((T_gen, latent_dim,  num_features_input))(input)
         for i in range(n_layers):
             x = conv_block(x, filters=n_nodes[i], kernel_size=(3,num_features_input), strides=1, padding='same', skip_connections=skip_connections)
 
@@ -130,9 +140,10 @@ def build_generator(n_layers, type, skip_connections, T_real, T_condition, num_f
         x = layers.Flatten()(input)
         for i in range(n_layers):
             x = dense_block(x, units=n_nodes[i], skip_connections=skip_connections)
+            x = layers.Dropout(0.2)(x)
 
     if type == 'tcn':
-        x = layers.Reshape((T_real, num_features_input, 1))(input)
+        x = layers.Reshape((T_gen, num_features_input, 1))(input)
         for i in range(n_layers):
             x = tcn_block(x, units=n_nodes[i], skip_connections=skip_connections)
 
@@ -140,10 +151,11 @@ def build_generator(n_layers, type, skip_connections, T_real, T_condition, num_f
 
     if activate_condition == True:
         xi = layers.Concatenate()([xi, x_c])
-    x = layers.Dense(T_real*num_features_input)(xi)
-    # x = layers.LeakyReLU()(x)
+    x = layers.Dense(T_gen*num_features_gen)(xi)
+    # x = layers.ReLU()(x)
 
-    output = layers.Reshape((T_real, num_features_input))(x)
+    # x = tf.keras.layers.Lambda(lambda z: round_ste(z))(x)
+    output = layers.Reshape((T_gen, num_features_gen))(x)
 
     if activate_condition == True:
         generator_model = Model([input, condition], output, name='generator_model')
@@ -153,7 +165,7 @@ def build_generator(n_layers, type, skip_connections, T_real, T_condition, num_f
     # plot_model(generator_model, to_file='gen.png', show_shapes=True, show_layer_names=True)
     return generator_model
 
-def train_step(real_samples, condition, generator_model, discriminator_model, optimizer, loss, T_real, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, use_condition, args):
+def train_step(real_samples, condition, generator_model, discriminator_model, feature_extractor, optimizer, loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, use_condition, args):
     discriminator_optimizer = optimizer[0]
     generator_optimizer = optimizer[1]
 
@@ -163,9 +175,9 @@ def train_step(real_samples, condition, generator_model, discriminator_model, op
         disc_step = 5
 
     if use_condition == True:
-        noise = tf.random.normal([batch_size, T_real*latent_dim, real_samples.shape[2]])
+        noise = tf.random.normal([batch_size, T_gen*latent_dim, real_samples.shape[2]])
     else:
-        noise = tf.random.normal([batch_size, (T_real+T_condition)*latent_dim, real_samples.shape[2]])
+        noise = tf.random.normal([batch_size, (T_gen+T_condition)*latent_dim, real_samples.shape[2]])
     
     # Create a GradientTape for the conditioner, generator, and discriminator.
     # GrandietTape collects all the operations that are executed inside it.
@@ -188,6 +200,8 @@ def train_step(real_samples, condition, generator_model, discriminator_model, op
                 generated_samples = generator_model([noise, condition], training=True)
                 real_output = discriminator_model([real_samples, condition], training=True)
                 fake_output = discriminator_model([generated_samples, condition], training=True)
+                # real_features_list = feature_extractor(real_samples)
+                # generated_features_list = feature_extractor(generated_samples)
             else:
                 generated_samples = generator_model(noise, training=True)
                 real_output = discriminator_model(real_samples, training=True)
@@ -202,38 +216,52 @@ def train_step(real_samples, condition, generator_model, discriminator_model, op
 
         gradients_of_discriminator = disc_tape.gradient(discriminator_loss, discriminator_model.trainable_variables)
         # Clip the gradients to stabilize training
-        #gradients_of_discriminator = [tf.clip_by_value(grad, -1.0, 1.0) for grad in gradients_of_discriminator]
+        gradients_of_discriminator = [tf.clip_by_value(grad, -1.0, 1.0) for grad in gradients_of_discriminator]
         discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator_model.trainable_variables))
-    
-    # Delete the tape to free resources
-    del disc_tape 
 
     # Generator training
     with tf.GradientTape() as gen_tape:
         if use_condition == True:
             generated_samples = generator_model([noise, condition], training=True)
             fake_output = discriminator_model([generated_samples, condition], training=True)
+            real_features_list = feature_extractor([real_samples, condition])
+            generated_features_list = feature_extractor([generated_samples, condition])
         else:
             generated_samples = generator_model(noise, training=True)
             fake_output = discriminator_model(generated_samples, training=True)
 
         if loss == 'original':
             generator_loss = compute_generator_loss(fake_output)
+            fm_loss = compute_feature_matching_loss(real_features_list, generated_features_list)
+            generator_loss = generator_loss +  fm_loss
+            # generator_loss = fm_loss
         elif loss == 'wasserstein':
             generator_loss = wasserstein_loss(fake_output)
 
     gradients_of_generator = gen_tape.gradient(generator_loss, generator_model.trainable_variables)
     generator_optimizer.apply_gradients(zip(gradients_of_generator, generator_model.trainable_variables))
 
+    # Delete the tape to free resources
     del gen_tape
+    del disc_tape 
 
     # disc_accuracy = compute_accuracy(outputs)
     if j % 10 == 0:
         logging.info(f'Epoch: {epoch} | Batch: {j}/{num_batches} | Disc loss: {np.mean(discriminator_loss):.5f} | Gen loss: {np.mean(generator_loss):.5f} | <Disc_output_r>: {np.mean(real_output):.5f}| <Disc_output_f>: {np.mean(fake_output):.5f}')
-    if j % 50 == 0:
+    if j % 1 == 0:
         summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, generated_samples, real_samples, metrics, j, num_batches, job_id, epoch, args)
 
-    return generator_model, discriminator_model
+    return generator_model, discriminator_model, noise
+
+def build_feature_extractor(discriminator, layer_indices):
+    outputs = [discriminator.layers[i].output for i in layer_indices]
+    return tf.keras.Model(discriminator.input, outputs)
+
+def compute_feature_matching_loss(real_features_list, generated_features_list):
+    losses = [tf.reduce_mean(tf.square(real - generated))
+              for real, generated in zip(real_features_list, generated_features_list)]
+    return tf.reduce_mean(losses)  # Average over all the feature matching losses
+
 
 def compute_discriminator_loss(real_output, fake_output):
     binary_crossentropy = tf.keras.losses.BinaryCrossentropy(from_logits=False)
@@ -244,9 +272,9 @@ def compute_discriminator_loss(real_output, fake_output):
     return total_disc_loss
 
 def compute_generator_loss(fake_output):
-    # binary_crossentropy = tf.keras.losses.BinaryCrossentropy(from_logits=False)
-    return -tf.math.log(fake_output + 1e-5)
-    # return binary_crossentropy(tf.ones_like(fake_output), fake_output)
+    binary_crossentropy = tf.keras.losses.BinaryCrossentropy(from_logits=False)
+    # return -tf.reduce_mean(tf.math.log(fake_output + 1e-5))
+    return binary_crossentropy(tf.ones_like(fake_output), fake_output)
 
 def wasserstein_loss(predictions):
     if len(predictions) == 2:
@@ -279,14 +307,14 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
 
     generated_samples = generated_samples[0,:,:].numpy()
     real_samples = real_samples[0,:,:].numpy()
+    real_output = real_output.numpy()
+    fake_output = fake_output.numpy()
     # features = [f'Curve{i+1}' for i in range(generated_samples.shape[1])]
 
     # add the metrics to the dictionary
     metrics['gen_loss'].append(np.mean(gen_loss))
-    for score in real_output[1,:]:
-        metrics['real_disc_out'].append(score)
-    for score in fake_output[1,:]:
-        metrics['fake_disc_out'].append(score)
+    metrics['real_disc_out'].append(np.mean(real_output))
+    metrics['fake_disc_out'].append(np.mean(fake_output))
     metrics['discriminator_loss'].append(np.mean(discriminator_loss))
 
     plt.figure(figsize=(10, 5), tight_layout=True)
@@ -295,7 +323,7 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
     plt.xlabel('Batch')
     plt.ylabel('Loss')
     plt.legend()
-    plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/000_losses.png')
+    plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/0_losses.png')
 
     plt.figure(figsize=(10, 5), tight_layout=True)
     plt.plot(metrics['real_disc_out'], label='Real', alpha=0.7)
@@ -303,7 +331,7 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
     plt.xlabel('Batch')
     plt.ylabel('Discriminator output')
     plt.legend()
-    plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/001_disc_output.png')
+    plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/1_disc_output.png')
 
     # if generated_samples.shape[1] == 1:
     #     plt.figure(figsize=(10, 5), tight_layout=True)
@@ -357,6 +385,7 @@ if __name__ == '__main__':
     parser.add_argument('-td', '--type_disc', help='Type of discriminator model (conv, lstm, dense)', type=str)
     parser.add_argument('-c', '--condition', action='store_true', help='Conditioning on the first T_condition time steps')
     parser.add_argument('-Tc', '--T_condition', help='Number of time steps to condition on', type=int, default=1)
+    parser.add_argument('-Tg', '--T_gen', help='Number of time steps to generate', type=int, default=1)
     parser.add_argument('-ls', '--loss', help='Loss function (original, wasserstein)', type=str, default='original')
 
     args = parser.parse_args()
@@ -417,7 +446,7 @@ if __name__ == '__main__':
     # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
     window_size = 3
     T_condition = args.T_condition
-    T_real = window_size - T_condition
+    T_gen = window_size - T_condition
     n_features_input = input_train.shape[1]
     latent_dim = 10
     n_epochs = 2000
@@ -442,7 +471,7 @@ if __name__ == '__main__':
         logging.info('Done.')
 
     # Use logging.info to logging.info all the hyperparameters
-    logging.info(f'\nHYPERPARAMETERS:\n\tlatent_dim per time: {latent_dim}\n\tn_features: {n_features_input}\n\tn_epochs: {n_epochs}\n\tT_condition: {T_condition}\n\tT_real: {T_real}\n\tbatch_size: {batch_size} -> num_batches: {train.shape[0]//batch_size}\n\tcondition: {args.condition}\n\tloss: {args.loss}\n')
+    logging.info(f'\nHYPERPARAMETERS:\n\tlatent_dim per time: {latent_dim}\n\tn_features: {n_features_input}\n\tn_epochs: {n_epochs}\n\tT_condition: {T_condition}\n\tT_gen: {T_gen}\n\tbatch_size: {batch_size} -> num_batches: {train.shape[0]//batch_size}\n\tcondition: {args.condition}\n\tloss: {args.loss}\n')
 
     # Define the optimizers
     generator_optimizer = tf.keras.optimizers.Adam(1e-4)
@@ -454,11 +483,12 @@ if __name__ == '__main__':
 
     # Build the models
     if args.condition== True:
-        generator_model = build_generator(args.n_layers_gen, args.type_gen, True, T_real, T_condition, n_features_input, latent_dim, True)
-        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, True, T_real, T_condition, n_features_input, True)
+        generator_model = build_generator(args.n_layers_gen, args.type_gen, True, T_gen, T_condition, n_features_input, latent_dim, True)
+        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, True, T_gen, T_condition, n_features_input, True)
+        feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
     else:
-        generator_model = build_generator(args.n_layers_gen, args.type_gen, True, T_real, T_condition, n_features_input, latent_dim, False)
-        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, True, T_real, T_condition, n_features_input, False)
+        generator_model = build_generator(args.n_layers_gen, args.type_gen, True, T_gen, T_condition, n_features_input, latent_dim, False)
+        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, True, T_gen, T_condition, n_features_input, False)
 
     logging.info('\n[Model] ---------- MODEL SUMMARIES ----------')
     logging.info(f'Data used\n\t{args.data} {args.num_dim}D')
@@ -506,7 +536,7 @@ if __name__ == '__main__':
             for batch_condition, batch_real_samples in dataset_train:
                 j += 1
                 batch_size = batch_real_samples.shape[0]
-                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_real, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
+                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, feature_extractor, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
                 # if j == 10:
                 #     break
         else:
@@ -514,7 +544,7 @@ if __name__ == '__main__':
                 j += 1
                 batch_condition = np.zeros_like(batch_real_samples)
                 batch_size = batch_real_samples.shape[0]
-                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_real, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
+                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
         # Save the models via checkpoint
         checkpoint_manager.save()
     
@@ -524,7 +554,7 @@ if __name__ == '__main__':
         # if args.condition == True:
         #     for val_batch_condition, val_batch in dataset_val:
         #         batch_size = val_batch.shape[0]
-        #         noise = tf.random.normal([batch_size, T_real*10, n_features_input])
+        #         noise = tf.random.normal([batch_size, T_gen*10, n_features_input])
         #         generated_samples = generator_model([noise, val_batch_condition], training=True)
         #         for feature in range(generated_samples.shape[2]):
         #             for i in range(generated_samples.shape[0]):
@@ -533,7 +563,7 @@ if __name__ == '__main__':
         # else:
         #     for val_batch in dataset_val:
         #         batch_size = val_batch.shape[0]
-        #         noise = tf.random.normal([batch_size, (T_real+T_condition)*10, n_features_input])
+        #         noise = tf.random.normal([batch_size, (T_gen+T_condition)*10, n_features_input])
         #         generated_samples = generator_model(noise, training=True)
         #         for feature in range(generated_samples.shape[2]):
         #             for i in range(generated_samples.shape[0]):
@@ -578,10 +608,10 @@ if __name__ == '__main__':
         #     if args.condition == True:
         #         idx = np.random.randint(0, len(dataset_val)-1)
         #         batch_size = len(list(dataset_val.as_numpy_iterator())[idx][0])
-        #         noise = tf.random.normal([batch_size, T_real*10, n_features_input])
+        #         noise = tf.random.normal([batch_size, T_gen*10, n_features_input])
         #         gen_input = [list(dataset_val.as_numpy_iterator())[idx][0], noise]
         #     else:
-        #         noise = tf.random.normal([batch_size, (T_real+T_condition)*10, n_features_input])
+        #         noise = tf.random.normal([batch_size, (T_gen+T_condition)*10, n_features_input])
         #         gen_input = noise
 
         #     generated_samples = generator_model(gen_input, training=True)
@@ -604,6 +634,6 @@ if __name__ == '__main__':
         number_of_batches_plot = 5
         features = [f'Curve{i+1}' for i in range(args.num_dim)]
         # scale back the data
-        plot_samples(dataset_train, number_of_batches_plot, generator_model, features, T_real, T_condition, latent_dim, n_features_input, job_id, epoch, scaler, args, final=False)
+        plot_samples(dataset_train, number_of_batches_plot, generator_model, features, T_gen, T_condition, latent_dim, n_features_input, job_id, epoch, scaler, args, final=False)
         logging.info('Done')
 

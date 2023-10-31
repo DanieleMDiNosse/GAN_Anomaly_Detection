@@ -290,9 +290,9 @@ if __name__ == '__main__':
         checkpoint_manager.save()
 
         logging.info('Creating a time series with the generated samples...')
-        number_of_batches_plot = 100 
+        # number_of_batches_plot = 100 
         features = message_df.columns
-        plot_samples(dataset_train, number_of_batches_plot, generator_model, features, T_real, T_condition, latent_dim, n_features_input, job_id, epoch, scaler, args, final=False)
+        plot_samples(dataset_train, generator_model, features, T_real, T_condition, latent_dim, n_features_input, job_id, epoch, scaler, args, final=False)
         logging.info('Done')
 
         if epoch > 50:

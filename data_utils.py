@@ -14,7 +14,7 @@ import tensorflow as tf
 from PIL import Image, ImageSequence
 from statsmodels.tsa.ar_model import AutoReg
 from statsmodels.stats.diagnostic import acorr_ljungbox
-from scipy.stats import normaltest
+from scipy.stats import normaltest, ttest_ind
 import math
 from scipy.optimize import minimize
 
@@ -82,11 +82,20 @@ def preprocessing_orderbook_df(orderbook, message, sampling_freq, discard_time, 
 
     # Discard the first k and the last l rows
     orderbook = orderbook.iloc[k:l, :]
-    # Sample the orderbook every f events and take only the first n_levels levels
-    orderbook = orderbook.iloc[::sampling_freq, :4*n_levels]
-    # Reset the index
+    # Initialize an empty list to store the indices of the rows to be selected
+    selected_indices = []
+    # Start with the first row
+    current_time = orderbook['Time'].values[0]
+    selected_indices.append(0)
+    # Iterate through the dataframe to select rows approximately 10 seconds apart
+    for i in range(1, len(orderbook)):
+        if orderbook['Time'].values[i] - current_time >= 10:
+            selected_indices.append(i)
+            current_time = orderbook['Time'].values[i]
+    # Create a new dataframe with the selected rows
+    orderbook = orderbook.iloc[selected_indices]
     orderbook = orderbook.reset_index(drop=True)
-    return orderbook
+    return orderbook, [k, l]
 
 # def lob_reconstruction(N, tick, bid_prices, bid_volumes, ask_prices, ask_volumes):
 #     n_columns = bid_prices.shape[1]
@@ -109,7 +118,7 @@ def preprocessing_orderbook_df(orderbook, message, sampling_freq, discard_time, 
     
 #     return p_line, volumes
 
-def volumes_for_imbalance(ask_prices, bid_prices, ask_volumes, bid_volumes, depth):
+def volumes_per_level(ask_prices, bid_prices, ask_volumes, bid_volumes, depth):
     '''This function takes as input the bid and ask prices and volumes and returns the volumes at each price level
     for the first depth levels. Note that not all the levels are occupied.
     
@@ -351,20 +360,33 @@ def compute_accuracy(outputs):
         total_accuracy = tf.reduce_mean(tf.cast(tf.less(fake_output, 0.5), tf.float32))
     return total_accuracy
 
-def explore_latent_space_loss(candidate_noise, condition, x_target, generator):
+def explore_latent_space_loss(candidate_noise, condition, x_target, generator, original_shape):
+    # Reshape the flattened noise back to its original shape
+    candidate_noise = np.reshape(candidate_noise, original_shape)
+
     candidate_gen = generator([candidate_noise, condition])
-    candidate_gen = tf.reshape(candidate_gen, [candidate_gen.shape[1], candidate_gen.shape[2]]).numpy()
-    corr = np.corrcoef(x_target, candidate_gen)[0, 1] # corrcoef returns a matrix
+    candidate_gen = np.array([candidate_gen.numpy()[:, 0, :]])
+    logging.info(f'candidate_gen.shape:\n\t{candidate_gen.shape}')
+    x_target = np.array([x_target.numpy()[:, 0, :]])
+    corr = np.corrcoef(x_target.ravel(), candidate_gen.ravel())[0, 1]
     loss = 1 - corr
     return loss
 
+def callback(xk):
+    # xk contains the current solution
+    # Compute and log the loss value (or other state information)
+    loss_value = explore_latent_space_loss(xk, condition, x_target, generator)
+    logging.info(f"At noise={xk}, Loss={loss_value}")
+
 def explore_latent_space(x_target, condition, latent_dim, T_gen, generator):
     logging.info('Exploring the latent space...')
-    # logging.info(f'x_target:\n\t{x_target}')
     logging.info(f'x_target.shape:\n\t{x_target.shape}')
-    candidate_noise = np.random.normal(size=(T_gen*latent_dim, x_target.shape[1]))
-    logging.info(f'candidate_noise.shape:\n\t{candidate_noise.shape}')
-    result = minimize(explore_latent_space_loss, candidate_noise, args=(condition, x_target, generator), method='L-BFGS-B')
+    # condition = tf.reshape(condition, [1, condition.shape[0], condition.shape[1]])
+    logging.info(f'condition shape:\n\t{condition.shape}')
+    candidate_noise_flat = tf.random.normal([condition.shape[0], T_gen*latent_dim, condition.shape[2]]).numpy().ravel()
+    original_shape = (condition.shape[0], T_gen*latent_dim, condition.shape[2])
+    logging.info(f'candidate_noise.shape:\n\t{candidate_noise_flat.shape}')
+    result = minimize(explore_latent_space_loss, candidate_noise_flat, args=(condition, x_target, generator, original_shape), method='L-BFGS-B')# callback=callback)
     logging.info(f'result:\n\t{result}')
     return result.x
 
@@ -378,72 +400,62 @@ def simple_rounding(n):
             new_n[i] = x + (100-r)
     return new_n
 
-def transform_and_reshape(tensor, T_real, n_features):
+def transform_and_reshape(tensor, T_real, n_features, c=10):
     tensor_flat = tf.reshape(tensor, [-1, T_real * n_features]).numpy()
-    tensor_flat = np.array([[x**2 * math.copysign(1, x) for x in row] for row in tensor_flat])
+    tensor_flat = np.array([[x**2 * math.copysign(1, x) for x in row] for row in tensor_flat])*c
     return tf.reshape(tensor_flat, [-1, T_real, n_features])
 
 
-def plot_samples(dataset, number_of_batches_plot, generator_model, features, T_real, T_condition, latent_dim, n_features_input, job_id, epoch, scaler, args, final=False):
+def plot_samples(dataset, generator_model, noises, features, T_real, T_condition, latent_dim, n_features_gen, job_id, epoch, scaler, args, final=False):
     '''This function plots the generated samples, together with the real one and the empirical distribution of the generated samples.'''
-    if final:
-        counter = f'{epoch}_final'
-    else:
-        counter = epoch
     # Select randomly an index to start from
-    idx = np.random.randint(0, len(dataset)-number_of_batches_plot-1)
-    dataset = dataset.skip(idx)
+    # idx = np.random.randint(0, len(dataset)-number_of_batches_plot-1)
+    # dataset = dataset.skip(idx)
 
     # Check if the dataset is conditioned or not
     for batch in dataset.take(1):
-        dim_batch = np.array(tf.shape(batch[0]))
-    if dim_batch[1] > 1: 
-        use_condition = True
-    else:
-        use_condition = False
+        # dim_batch = np.array(tf.shape(batch[0]))
+        if len(batch) > 1: 
+            use_condition = True
+        else:
+            use_condition = False
 
     # Create two lists to store the generated and real samples. 
-    # These list will be of shape (batch_size*number_of_batches_plot, T_real, n_features_input)
+    # These list will be of shape (batch_size*number_of_batches_plot, T_real, n_features_gen)
     generated_samples = []
     real_samples = []
     c = 0
 
     if use_condition == True:
+        k = 0
         for batch_condition, batch in dataset:
-            c += 1
             batch_size = batch.shape[0]
-            noise = tf.random.normal([batch_size, T_real*latent_dim, n_features_input])
-            # gen_sample is a tensor of shape (batch_size, T_real, n_features_input)
-            # The generator model outputs a number of samples equal to the batch size
-            gen_sample = generator_model([noise, batch_condition], training=True)
+            gen_sample = generator_model([noises[k], batch_condition])
             if scaler == None:
-                gen_sample = transform_and_reshape(gen_sample, T_real, n_features_input)
-                batch = transform_and_reshape(batch, T_real, n_features_input)
+                gen_sample = transform_and_reshape(gen_sample, T_real, n_features_gen)
+                batch = transform_and_reshape(batch, T_real, n_features_gen)
             else:
                 batch = scaler.inverse_transform(tf.reshape(batch, [batch.shape[0], batch.shape[1]*batch.shape[2]])).reshape(batch.shape)
                 gen_sample = scaler.inverse_transform(tf.reshape(gen_sample, [gen_sample.shape[0], gen_sample.shape[1]*gen_sample.shape[2]])).reshape(gen_sample.shape)
-            # Append each sample to the lists
             for i in range(gen_sample.shape[0]):
-                # All the appended samples will be of shape (T_real, n_features_input)
+                # All the appended samples will be of shape (T_real, n_features_gen)
                 generated_samples.append(gen_sample[i, :, :])
                 real_samples.append(batch[i, :, :])
-            if c == number_of_batches_plot: break
+            k += 1
     else:
         for batch in dataset:
-            c += 1
             batch_size = batch.shape[0]
-            noise = tf.random.normal([batch_size, (T_real+T_condition)*latent_dim, n_features_input])
+            noise = tf.random.normal([batch_size, (T_real+T_condition)*latent_dim, n_features_gen])
             gen_sample = generator_model(noise, training=True)
             batch = scaler.inverse_transform(tf.reshape(batch, [batch.shape[0], batch.shape[1]*batch.shape[2]])).reshape(batch.shape)
             gen_sample = scaler.inverse_transform(tf.reshape(gen_sample, [gen_sample.shape[0], gen_sample.shape[1]*gen_sample.shape[2]])).reshape(gen_sample.shape)
             for i in range(gen_sample.shape[0]):
                 generated_samples.append(gen_sample[i, :, :])
                 real_samples.append(batch[i, :, :])
-            if c == number_of_batches_plot: break
     generated_samples = np.array(generated_samples)
     real_samples = np.array(real_samples)
     
-    # features = [f'Curve{i+1}' for i in range(n_features_input)]
+    means_real, means_gen, p_values = [], [], []
     if len(features) == 1:
         generated_samples = generated_samples.flatten()
         real_samples = real_samples.flatten()
@@ -454,30 +466,89 @@ def plot_samples(dataset, number_of_batches_plot, generator_model, features, T_r
         plt.xlabel('Time (Events)')
         plt.legend()
     else:
-        fig, axes = plt.subplots(n_features_input, 1, figsize=(10, 10), tight_layout=True)
-        fig1, axes1 = plt.subplots(n_features_input, 1, figsize=(10, 10), tight_layout=True)
+        fig, axes = plt.subplots(n_features_gen, 1, figsize=(10, 10), tight_layout=True)
+        fig1, axes1 = plt.subplots(n_features_gen, 1, figsize=(10, 10), tight_layout=True)
         for i, feature in enumerate(features):
             if feature == 'Price':
                 d_gen = simple_rounding(generated_samples[:, :, i].flatten())
                 d_real = simple_rounding(real_samples[:, :, i].flatten())
             else:
-                d_gen = generated_samples[:, :, i].flatten()
+                d_gen = np.round(generated_samples[:, :, i].flatten())
                 d_real = real_samples[:, :, i].flatten()
+            _, p_value = ttest_ind(d_gen, d_real, equal_var=False)
+            means_real.append(np.mean(d_real))
+            means_gen.append(np.mean(d_gen))
+            p_values.append(p_value)
             axes[i].plot(d_gen[:200], label='Generated', alpha=0.85)
             axes[i].plot(d_real[:200], label='Real', alpha=0.85)
             axes[i].set_title(f'Generated {feature}_{epoch}')
             axes[i].legend()
-            axes1[i].hist(d_gen, bins=100, label='Generated', alpha=0.3)
-            axes1[i].hist(np.round(d_gen), bins=100, label='Generated rounded', alpha=0.85)
-            axes1[i].hist(d_real, bins=100, label='Real', alpha=0.85)
+            axes1[i].hist(d_gen, bins=100, label='Generated', alpha=0.75)
+            axes1[i].hist(d_real, bins=100, label='Real', alpha=0.75)
             axes1[i].set_title(f'Generated {feature}_{epoch}')
+            axes1[i].set_yscale('log')
             axes1[i].legend()
         axes[i].set_xlabel('Time (Events)')
         axes1[i].set_xlabel('Values')
     path = f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}'
-    fig.savefig(f'{path}/003_generated_samples_{counter}.png')
-    fig1.savefig(f'{path}/004_generated_samples_hist_{counter}.png')
+    fig.savefig(f'{path}/7_generated_samples_{epoch}.png')
+    fig1.savefig(f'{path}/3_generated_samples_hist_{epoch}.png')
+
+    width = 0.4  # Width of the bars
+    indices = np.arange(len(features))  # Create indices for the x position
+    indices1 = np.concatenate((np.arange(1,len(features),2)[::-1], np.arange(0,len(features),2)))
+    print(np.array(features)[indices1])
+
+    data = list(zip(features, p_values))
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
+    axes[0].bar(indices - width/2, np.array(means_gen)[indices1], width=width, label='Generated', alpha=0.85)  # Adjust x position for 'Generated' bars
+    axes[0].bar(indices + width/2, np.array(means_real)[indices1], width=width, label='Real', alpha=0.85)  # Adjust x position for 'Real' bars
+    axes[0].set_title(f'Average_LOB_shape_{epoch}')
+    axes[0].set_xlabel('Levels')
+    axes[0].set_xticks(indices)  # Set the x-tick labels to your features
+    axes[0].set_xticklabels(np.array(features)[indices1], rotation=60)  # Rotate the x-tick labels by 90 degrees
+    axes[0].legend()
+    # Remove axes
+    axes[1].axis('tight')
+    axes[1].axis('off')
+    # Create table and add it to the plot
+    axes[1].table(cellText=data, cellLoc='center', loc='center')
+    # Add a title to the table
+    axes[1].set_title(f"Welch's t-test p-values_{epoch}")
+    plt.savefig(f'{path}/5_average_LOB_shape_{epoch}.png')
+
+    generated_samples = generated_samples.reshape(generated_samples.shape[0]*generated_samples.shape[1], generated_samples.shape[2])
+    real_samples = real_samples.reshape(real_samples.shape[0]*real_samples.shape[1], real_samples.shape[2])
+    correlation_matrix_gen = np.corrcoef(generated_samples, rowvar=False)
+    correlation_matrix_real = np.corrcoef(real_samples, rowvar=False)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
+    axes[0].imshow(correlation_matrix_gen, cmap='coolwarm', vmin=-1, vmax=1)
+    axes[0].set_title('Correlation Matrix (generated samples)')
+    axes[0].set_xticks(range(generated_samples.shape[1]))
+    axes[0].set_yticks(range(generated_samples.shape[1]))
+    axes[0].set_xticklabels(features, rotation=90)
+    axes[0].set_yticklabels(features)
+    # Display the correlation values on the heatmap
+    for i in range(correlation_matrix_gen.shape[0]):
+        for j in range(correlation_matrix_gen.shape[1]):
+            axes[0].text(j, i, round(correlation_matrix_gen[i, j], 2),
+                    ha='center', va='center',
+                    color='black')
+    axes[1].imshow(correlation_matrix_real, cmap='coolwarm', vmin=-1, vmax=1)
+    axes[1].set_title('Correlation Matrix (real samples)')
+    axes[1].set_xticks(range(generated_samples.shape[1]))
+    axes[1].set_yticks(range(generated_samples.shape[1]))
+    axes[1].set_xticklabels(features, rotation=90)
+    axes[1].set_yticklabels(features)
+    for i in range(correlation_matrix_real.shape[0]):
+        for j in range(correlation_matrix_real.shape[1]):
+            axes[1].text(j, i, round(correlation_matrix_real[i, j], 2),
+                    ha='center', va='center',
+                    color='black')
+    plt.savefig(f'{path}/6_correlation_matrix_{epoch}.png')
     plt.close()
+    
     return None
 
 def create_animated_gif(job_id):
@@ -615,7 +686,7 @@ def ar1_fit(data):
         logging.info(f"\tThe null hypothesis cannot be rejected")
     return None
 
-def anomaly_injection(message_df, anomaly_type):
+def anomaly_injection_message(message_df, anomaly_type):
     '''This function takes as input a message dataframe and injects anomalies in it. There will be
     two types of anomalies: the first one is the random submissions of enormous orders (buy or sell)
     at a random price, while the second one consists in filling one side of the LOB with a lot of orders.'''
@@ -634,6 +705,38 @@ def anomaly_injection(message_df, anomaly_type):
         message_df.loc[index : index]['Direction'] = 1
     return message_df
 
+def anomaly_injection_orderbook(orderbook, anomaly_type):
+    '''This function takes as input a orderbook dataframe and injects anomalies in it. There will be
+    two types of anomalies: the first one is the random submissions of enormous orders (buy or sell)
+    at a random price, while the second one consists in filling one side of the LOB with a lot of orders.'''
+    # Select the 1% of the data to inject anomalies
+    n_anomalies = int(len(orderbook) * 0.01)
+    if anomaly_type == 'big_order':
+        # Select randomly the indices where to inject the big orders
+        indices = np.random.choice(len(orderbook), n_anomalies, replace=False)
+        orderbook.loc[indices] = 100000
+    if anomaly_type == 'fill_side':
+        columns = orderbook.columns
+        random_number_1 = np.random.normal()
+        random_number_2 = np.random.randint(0, orderbook.shape[0]-10)
+        if random_number_1 < 0:
+            bid = [column for column in columns if 'bid' in column]
+            orderbook.loc[random_number_2: random_number_2+10, bid] = 1000
+            print(bid)
+            print(random_number_2)
+            print(orderbook.iloc[random_number_2: random_number_2+10])
+        else:
+            ask = [column for column in columns if 'ask' in column]
+            orderbook.loc[random_number_2: random_number_2+10, ask] = 1000
+            print(ask)
+            print(random_number_2)
+            print(orderbook.iloc[random_number_2: random_number_2+10])
+    return orderbook
+
+def compute_spread(orderbook):
+    '''This function computes the spread of the orderbook dataframe.'''
+    spread = orderbook['Ask price 1'] - orderbook['Bid price 1']
+    return spread
 
 
 if __name__ == "__main__":

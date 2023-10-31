@@ -196,7 +196,7 @@ class TestDataUtils(unittest.TestCase):
         for i in range(tensor.shape[0]):
             for j in range(tensor.shape[1]):
                 for k in range(tensor.shape[2]):
-                    expected_val = tensor[i, j, k].numpy() ** 2 * math.copysign(1, tensor[i, j, k].numpy())
+                    expected_val = tensor[i, j, k].numpy() ** 2 * math.copysign(1, tensor[i, j, k].numpy())*10
                     self.assertEqual(transformed_tensor[i, j, k].numpy(), expected_val)
 
 if __name__ == '__main__':
@@ -209,7 +209,7 @@ if __name__ == '__main__':
                     format='%(asctime)s [%(levelname)s]: %(message)s')
     logger = logging.getLogger()
 
-    unittest.main(testRunner=unittest.TextTestRunner(resultclass=LoggingTestResult))
+    unittest.main(testRunner=unittest.TextTestRunner(verbosity=3, resultclass=LoggingTestResult))
 
 
 

@@ -15,6 +15,8 @@ import logging
 from model_utils import *
 from joblib import dump, load
 import math
+import gc
+import sys
 
 
 if __name__ == '__main__':
@@ -24,13 +26,17 @@ if __name__ == '__main__':
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
     parser.add_argument('-N', '--N_days', type=int, help='Number of the day to consider')
+    parser.add_argument('-d', '--depth', help='Depth of the orderbook', type=int)
+    parser.add_argument('-bs', '--batch_size', help='Batch size', type=int)
+    parser.add_argument('-ld', '--latent_dim', help='Latent dimension', type=int)
     parser.add_argument('-nlg', '--n_layers_gen', help='Number of generator layers', type=int)
     parser.add_argument('-nld', '--n_layers_disc', help='Number of discriminator layers', type=int)
     parser.add_argument('-tg', '--type_gen', help='Type of generator model (conv, lstm, dense)', type=str)
     parser.add_argument('-td', '--type_disc', help='Type of discriminator model (conv, lstm, dense)', type=str)
     parser.add_argument('-sc', '--skip_connection', action='store_true', help='Use or not skip connections')
     parser.add_argument('-c', '--condition', action='store_true', help='Conditioning on the first T_condition time steps')
-    parser.add_argument('-tc', '--T_condition', help='Number of time steps to condition on', type=int, default=2)
+    parser.add_argument('-Tc', '--T_condition', help='Number of time steps to condition on', type=int, default=2)
+    parser.add_argument('-Tg', '--T_gen', help='Number of time steps to generate', type=int, default=1)
     parser.add_argument('-ls', '--loss', help='Loss function (original, wasserstein)', type=str, default='original')
 
     args = parser.parse_args()
@@ -66,8 +72,9 @@ if __name__ == '__main__':
     # date = '2015-01-01_2015-01-31_10'
     stock = 'MSFT'
     date = '2018-04-01_2018-04-30_5'
+    total_depth = 5
     N = args.N_days
-    depth = 3
+    depth = args.depth
 
     logging.info(f'Stock:\n\t{stock}')
     logging.info(f'Number of days:\n\t{N}')
@@ -98,44 +105,45 @@ if __name__ == '__main__':
     message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][:N]
 
     # Preprocess the data using preprocessing_orderbook_df
-    orderbook_dfs = [preprocessing_orderbook_df(df, msg, discard_time=1800, sampling_freq=40, n_levels=depth) for df, msg in zip(orderbook_dfs, message_dfs)]
+    orderbook_dfs, discard_times_list = zip(*[(preprocessing_orderbook_df(df, msg, discard_time=1800, sampling_freq=40, n_levels=total_depth)) for df, msg in zip(orderbook_dfs, message_dfs)])
+    logging.info(f'Discarded time (sod, eod):\n\t{[discard_times for discard_times in discard_times_list]}')
     # Merge all the dataframes into a single one
     orderbook_df = pd.concat(orderbook_dfs, ignore_index=True)
-    logging.info(f'orderbook columns:\n{orderbook_df.columns}')
+    # Evaluate the spread
+    spread = compute_spread(orderbook_df)
+    # Extract the prices and volumes
     bid_prices, bid_volumes, ask_prices, ask_volumes = prices_and_volumes(orderbook_df)
-    volumes_ask, volumes_bid = volumes_for_imbalance(ask_prices, bid_prices, ask_volumes, bid_volumes, depth)
+    # Compute the volumes considering also empty levels
+    volumes_ask, volumes_bid = volumes_per_level(ask_prices, bid_prices, ask_volumes, bid_volumes, total_depth)
+    # Create a dataframe with the volumes
     orderbook_df = pd.DataFrame()
-    for i in range(depth):
+    for i in range(total_depth):
         orderbook_df[f'volumes_ask_{i+1}'] = volumes_ask[:, i]
         orderbook_df[f'volumes_bid_{i+1}'] = volumes_bid[:, i]
-    # orderbook_df = pd.DataFrame({f'volumes_ask_1': volumes_ask[:, 0], 'volumes_ask_2': volumes_ask[:, 1], 'volumes_ask_3': volumes_ask[:, 2], 'volumes_ask_4': volumes_ask[:, 3], 'volumes_bid_1': volumes_bid[:, 0], 'volumes_bid_2': volumes_bid[:, 1], 'volumes_bid_3': volumes_bid[:, 2], 'volumes_bid_4': volumes_bid[:, 3]})
-    # Normalize the data via sqrt
-    orderbook_df = orderbook_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x)))
-    # logging.info(f'Discarded time (sod, eod):\n\t{discarded_time}')
+    orderbook_df['spread'] = spread
+    orderbook_df = orderbook_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
 
     # Define the parameters of the GAN. Some of them are set via argparse
-    # Batch size: all the sample -> batch mode, one sample -> SGD, in between -> mini-batch SGD
     T_condition = args.T_condition
-    window_size = T_condition + 1
-    T_real = window_size - T_condition
+    T_gen = args.T_gen
+    window_size = T_condition + T_gen
     n_features_input = orderbook_df.shape[1]
-    latent_dim = 10
-    n_epochs = 20000
-    batch_size = 32
+    n_features_gen = 2*depth
+    latent_dim = args.latent_dim
+    n_epochs = 10000
+    batch_size = args.batch_size
 
     # Define the parameters for the early stopping criterion
     best_gen_weights = None
     best_disc_weights = None
     best_wass_dist = float('inf')
     patience_counter = 0
-    patience = 100
+    patience = 200
 
     # Scale all the data at once is prohibitive due to memory resources. For this reason, the data is divided into overlapping pieces
     # and each piece is scaled separately using the partial_fit function of StandardScaler. Note that this is the only scaler that
     # has this feature. Then, the scaled pieces are merged together and divided into windows.
     num_pieces = 5
-    # for day in range(N):
-    # logging.info(f'######################### START DAY {day+1}/{N} #########################')
 
     if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{N}days_orderbook_.npy'):
         logging.info('\n[Input] ---------- PREPROCESSING ----------')
@@ -185,14 +193,18 @@ if __name__ == '__main__':
 
         logging.info('\nSplit the condition data into train and validation sets...')
         train, val = train_test_split(fp, train_size=0.75)
-        logging.info(f'Train shape:\n\t{train.shape}\nValidation shape:\n\t{val.shape}')
         logging.info('Done.')
 
         if args.condition == True:
             logging.info('\nDividing each window into condition and input...')
-            condition_train, input_train = train[:, :T_condition, :], train[:, T_condition:, :]
-            condition_val, input_val = val[:, :T_condition, :], val[:, T_condition:, :]
+            condition_train, input_train = train[:, :T_condition, :], train[:, T_condition:, :n_features_gen]
+            condition_val, input_val = val[:, :T_condition, :], val[:, T_condition:, :n_features_gen]
             logging.info('Done.')
+
+            logging.info(f'input_train shape:\n\t{input_train.shape}')
+            logging.info(f'condition_train shape:\n\t{condition_train.shape}')
+            logging.info(f'input_val shape:\n\t{input_val.shape}')
+            logging.info(f'condition_val shape:\n\t{condition_val.shape}')
 
         logging.info('\nSave the files...')
         np.save(f'../data/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', condition_train)
@@ -219,16 +231,20 @@ if __name__ == '__main__':
         logging.info('Done.')
 
     logging.info(f"\nHYPERPARAMETERS:\n"
+                    f"\tstock: {stock}\n"
+                    f"\tdepth: {depth}\n"
                     f"\tgenerator: {args.type_gen}\n"
                     f"\tdiscriminator: {args.type_disc}\n"
                     f"\tn_layers_gen: {args.n_layers_gen}\n"
                     f"\tn_layers_disc: {args.n_layers_disc}\n"
                     f"\tskip_connection: {args.skip_connection}\n"
                     f"\tlatent_dim per time: {latent_dim}\n"
-                    f"\tn_features: {n_features_input}\n"
+                    f"\tn_features_input: {n_features_input}\n"
+                    f"\tn_features_gen: {n_features_gen}\n"
+                    f"\tfeatures: {orderbook_df.columns}\n"
                     f"\tn_epochs: {n_epochs}\n"
                     f"\tT_condition: {T_condition}\n"
-                    f"\tT_real: {T_real}\n"
+                    f"\tT_gen: {T_gen}\n"
                     f"\tbatch_size: {batch_size} (num_batches: {input_train.shape[0]//batch_size})\n"
                     f"\tcondition: {args.condition}\n"
                     f"\tloss: {args.loss}\n"
@@ -242,11 +258,12 @@ if __name__ == '__main__':
 
     # Build the models
     if args.condition== True:
-        generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_real, T_condition, n_features_input, latent_dim, True)
-        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_real, T_condition, n_features_input, True)
+        generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, True)
+        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, True, args.loss)
+        feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
     else:
-        generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_real, T_condition, n_features_input, latent_dim, False)
-        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_real, T_condition, n_features_input, False)
+        generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, latent_dim, False)
+        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, False, args.loss)
 
     logging.info('\n[Model] ---------- MODEL SUMMARIES ----------')
     generator_model.summary(print_fn=logging.info)
@@ -259,12 +276,19 @@ if __name__ == '__main__':
     metrics = {'discriminator_loss': [], 'gen_loss': [], 'real_disc_out': [], 'fake_disc_out': []}
 
     # Define checkpoint and checkpoint manager
+    # job_id_restore = 192418
     checkpoint_prefix = f"models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/"
     checkpoint = tf.train.Checkpoint(optimizer=optimizer,
                                     generator_model=generator_model,
                                     discriminator_model=discriminator_model)
     checkpoint_manager = tf.train.CheckpointManager(checkpoint, directory=checkpoint_prefix, max_to_keep=3)
-    # checkpoint.restore(checkpoint_manager.latest_checkpoint)
+    checkpoint.restore(checkpoint_manager.latest_checkpoint)
+    # # save the models
+    # logging.info('Saving the models...')
+    # generator_model.save(f'models/{job_id_restore}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.h5')
+    # discriminator_model.save(f'models/{job_id_restore}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.h5')
+    # logging.info('Done.')
+    # exit()
 
 
     # Train the GAN.
@@ -283,45 +307,47 @@ if __name__ == '__main__':
     wass_to_plot = []
     for epoch in range(n_epochs):
         j = 0
+        noises = []
         if args.condition == True:
             for batch_condition, batch_real_samples in dataset_train:
                 j += 1
                 batch_size = batch_real_samples.shape[0]
-                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_real, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
-                # if j == 10:
-                #     break
+                generator_model, discriminator_model, noise = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, feature_extractor, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
+                noises.append(noise)
         else:
             for batch_real_samples in dataset_train:
                 j += 1
                 batch_condition = np.zeros_like(batch_real_samples)
                 batch_size = batch_real_samples.shape[0]
-                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_real, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
+                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
         # Save the models via checkpoint
         checkpoint_manager.save()
 
-        logging.info('Creating a time series with the generated samples...')
-        number_of_batches_plot = 100 
-        features = orderbook_df.columns
-        plot_samples(dataset_train, number_of_batches_plot, generator_model, features, T_real, T_condition, latent_dim, n_features_input, job_id, epoch, None, args, final=False)
-        logging.info('Done')
+        if epoch % 10 == 0:
+            logging.info('Creating a time series with the generated samples...')
+            # Note that even you define number_of_batches_plot, you modified plot_sample in order to plot all the batches
+            # number_of_batches_plot = 100 
+            features = orderbook_df.columns[:n_features_gen]
+            plot_samples(dataset_train, generator_model, noises, features, T_gen, T_condition, latent_dim, n_features_gen, job_id, epoch, None, args, final=False)
+            logging.info('Done')
 
-        if epoch > 50:
+        if epoch > 1:
             logging.info('Check Early Stopping Criteria on Validation Set')
 
-            wass_dist = [[] for i in range(n_features_input)]
+            wass_dist = [[] for _ in range(n_features_gen)]
             if args.condition == True:
                 for val_batch_condition, val_batch in dataset_val:
                     batch_size = val_batch.shape[0]
-                    noise = tf.random.normal([batch_size, T_real*latent_dim, n_features_input])
+                    noise = tf.random.normal([batch_size, T_gen*latent_dim, n_features_gen])
                     generated_samples = generator_model([noise, val_batch_condition], training=True)
-                    for feature in range(generated_samples.shape[2]):
+                    for feature in range(n_features_gen):
                         for i in range(generated_samples.shape[0]):
                             w = wasserstein_distance(val_batch[i, :, feature], generated_samples[i, :, feature])
                             wass_dist[feature].append(w)
             else:
                 for val_batch in dataset_val:
                     batch_size = val_batch.shape[0]
-                    noise = tf.random.normal([batch_size, (T_real+T_condition)*latent_dim, n_features_input])
+                    noise = tf.random.normal([batch_size, (T_gen+T_condition)*latent_dim, n_features_input])
                     generated_samples = generator_model(noise, training=True)
                     for feature in range(generated_samples.shape[2]):
                         for i in range(generated_samples.shape[0]):
@@ -359,13 +385,13 @@ if __name__ == '__main__':
                 if args.condition == True:
                     idx = np.random.randint(0, len(dataset_val)-1)
                     batch_size = len(list(dataset_val.as_numpy_iterator())[idx][0])
-                    noise = tf.random.normal([batch_size, T_real*latent_dim, n_features_input])
+                    noise = tf.random.normal([batch_size, T_gen*latent_dim, n_features_input])
                     gen_input = [noise, list(dataset_val.as_numpy_iterator())[idx][0]]
                 else:
-                    noise = tf.random.normal([batch_size, (T_real+T_condition)*latent_dim, n_features_input])
+                    noise = tf.random.normal([batch_size, (T_gen+T_condition)*latent_dim, n_features_input])
                     gen_input = noise
 
-                plot_samples(dataset_train, number_of_batches_plot, generator_model, features, T_real, T_condition, latent_dim, n_features_input, job_id, (epoch-patience), scaler, args, final=True)
+                # plot_samples(dataset_train, generator_model, noises, features, T_gen, T_condition, latent_dim, n_features_input, job_id, (epoch-patience), None, args, final=True)
                 logging.info('Done')
                 break
             else:
@@ -376,7 +402,12 @@ if __name__ == '__main__':
             plt.plot(wass_to_plot)
             plt.xlabel('Epoch')
             plt.ylabel('Wasserstein distance')
-            plt.title(f'Mean over the features of the Wasserstein distances')
-            plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/000_wasserstein_distance.png')
+            plt.title(f'Mean over the features of the Wasserstein distances (Validaiton set)')
+            plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/0_wasserstein_distance.png')
+            plt.close()
 
-        # logging.info(f'##################### END DAY {day+1}/{N} #####################\n')
+    # Maybe it is not necessary, but I prefer to clear all the memory
+    gc.collect()
+    tf.keras.backend.clear_session()
+    sys.exit()
+
