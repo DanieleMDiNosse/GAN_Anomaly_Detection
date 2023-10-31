@@ -406,52 +406,29 @@ def transform_and_reshape(tensor, T_real, n_features, c=10):
     return tf.reshape(tensor_flat, [-1, T_real, n_features])
 
 
-def plot_samples(dataset, generator_model, noises, features, T_real, T_condition, latent_dim, n_features_gen, job_id, epoch, scaler, args, final=False):
+def plot_samples(dataset, generator_model, noises, features, T_real, T_condition, latent_dim, n_features_gen, job_id, epoch, scaler, args):
     '''This function plots the generated samples, together with the real one and the empirical distribution of the generated samples.'''
-    # Select randomly an index to start from
-    # idx = np.random.randint(0, len(dataset)-number_of_batches_plot-1)
-    # dataset = dataset.skip(idx)
-
-    # Check if the dataset is conditioned or not
-    for batch in dataset.take(1):
-        # dim_batch = np.array(tf.shape(batch[0]))
-        if len(batch) > 1: 
-            use_condition = True
-        else:
-            use_condition = False
 
     # Create two lists to store the generated and real samples. 
     # These list will be of shape (batch_size*number_of_batches_plot, T_real, n_features_gen)
     generated_samples = []
     real_samples = []
-    c = 0
 
-    if use_condition == True:
-        k = 0
-        for batch_condition, batch in dataset:
-            batch_size = batch.shape[0]
-            gen_sample = generator_model([noises[k], batch_condition])
-            if scaler == None:
-                gen_sample = transform_and_reshape(gen_sample, T_real, n_features_gen)
-                batch = transform_and_reshape(batch, T_real, n_features_gen)
-            else:
-                batch = scaler.inverse_transform(tf.reshape(batch, [batch.shape[0], batch.shape[1]*batch.shape[2]])).reshape(batch.shape)
-                gen_sample = scaler.inverse_transform(tf.reshape(gen_sample, [gen_sample.shape[0], gen_sample.shape[1]*gen_sample.shape[2]])).reshape(gen_sample.shape)
-            for i in range(gen_sample.shape[0]):
-                # All the appended samples will be of shape (T_real, n_features_gen)
-                generated_samples.append(gen_sample[i, :, :])
-                real_samples.append(batch[i, :, :])
-            k += 1
-    else:
-        for batch in dataset:
-            batch_size = batch.shape[0]
-            noise = tf.random.normal([batch_size, (T_real+T_condition)*latent_dim, n_features_gen])
-            gen_sample = generator_model(noise, training=True)
+    k = 0
+    for batch_condition, batch in dataset:
+        gen_sample = generator_model([noises[k], batch_condition])
+        if scaler == None:
+            gen_sample = transform_and_reshape(gen_sample, T_real, n_features_gen)
+            batch = transform_and_reshape(batch, T_real, n_features_gen)
+        else:
             batch = scaler.inverse_transform(tf.reshape(batch, [batch.shape[0], batch.shape[1]*batch.shape[2]])).reshape(batch.shape)
             gen_sample = scaler.inverse_transform(tf.reshape(gen_sample, [gen_sample.shape[0], gen_sample.shape[1]*gen_sample.shape[2]])).reshape(gen_sample.shape)
-            for i in range(gen_sample.shape[0]):
-                generated_samples.append(gen_sample[i, :, :])
-                real_samples.append(batch[i, :, :])
+        for i in range(gen_sample.shape[0]):
+            # All the appended samples will be of shape (T_real, n_features_gen)
+            generated_samples.append(gen_sample[i, :, :])
+            real_samples.append(batch[i, :, :])
+        k += 1
+
     generated_samples = np.array(generated_samples)
     real_samples = np.array(real_samples)
     

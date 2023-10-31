@@ -34,7 +34,6 @@ if __name__ == '__main__':
     parser.add_argument('-tg', '--type_gen', help='Type of generator model (conv, lstm, dense)', type=str)
     parser.add_argument('-td', '--type_disc', help='Type of discriminator model (conv, lstm, dense)', type=str)
     parser.add_argument('-sc', '--skip_connection', action='store_true', help='Use or not skip connections')
-    parser.add_argument('-c', '--condition', action='store_true', help='Conditioning on the first T_condition time steps')
     parser.add_argument('-Tc', '--T_condition', help='Number of time steps to condition on', type=int, default=2)
     parser.add_argument('-Tg', '--T_gen', help='Number of time steps to generate', type=int, default=1)
     parser.add_argument('-ls', '--loss', help='Loss function (original, wasserstein)', type=str, default='original')
@@ -140,11 +139,7 @@ if __name__ == '__main__':
     patience_counter = 0
     patience = 200
 
-    # Scale all the data at once is prohibitive due to memory resources. For this reason, the data is divided into overlapping pieces
-    # and each piece is scaled separately using the partial_fit function of StandardScaler. Note that this is the only scaler that
-    # has this feature. Then, the scaled pieces are merged together and divided into windows.
     num_pieces = 5
-
     if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{N}days_orderbook_.npy'):
         logging.info('\n[Input] ---------- PREPROCESSING ----------')
 
@@ -158,20 +153,6 @@ if __name__ == '__main__':
 
         logging.info(f'Number of windows: {length}')
 
-        # # Create a scaler object to scale the data
-        # scaler = StandardScaler()
-        # logging.info(f'Memorize "sub" estimates of mean and variance...')
-        # for piece_idx, data in enumerate(sub_data):
-        #     logging.info(f'\t{piece_idx+1}/{num_pieces}')
-        #     # The scaler is updated with the data of each piece
-        #     scaler.partial_fit(data)
-        # logging.info('Done.')
-
-        # save the scaler
-        # logging.info('Save the scaler...')
-        # dump(scaler, f'scaler_{N}days_orderbook.joblib')
-        # logging.info('Done.')
-
         # Create a memmap to store the scaled data.
         final_shape = (length, window_size, n_features_input)
         fp = np.memmap("final_data.dat", dtype='float32', mode='w+', shape=final_shape)
@@ -180,9 +161,6 @@ if __name__ == '__main__':
         logging.info(f'\nStart scaling the data...')
         for piece_idx, data in enumerate(sub_data):
             logging.info(f'\t{piece_idx+1}/{num_pieces}')
-            # Here the scaling is performed and the resulting scaled data is assign divided into windows
-            # and assigned to the memory mapped vector
-            #scaled_data = scaler.transform(data.reshape(-1, data.shape[-1])).reshape(data.shape)
             windows = np.array(divide_into_windows(data, window_size))
             logging.info(f'\twindows shape: {windows.shape}')
             end_idx = start_idx + windows.shape[0]
@@ -192,19 +170,18 @@ if __name__ == '__main__':
         logging.info('Done.')
 
         logging.info('\nSplit the condition data into train and validation sets...')
-        train, val = train_test_split(fp, train_size=0.75)
+        train, val = train_test_split(fp, train_size=0.80)
         logging.info('Done.')
 
-        if args.condition == True:
-            logging.info('\nDividing each window into condition and input...')
-            condition_train, input_train = train[:, :T_condition, :], train[:, T_condition:, :n_features_gen]
-            condition_val, input_val = val[:, :T_condition, :], val[:, T_condition:, :n_features_gen]
-            logging.info('Done.')
+        logging.info('\nDividing each window into condition and input...')
+        condition_train, input_train = train[:, :T_condition, :], train[:, T_condition:, :n_features_gen]
+        condition_val, input_val = val[:, :T_condition, :], val[:, T_condition:, :n_features_gen]
+        logging.info('Done.')
 
-            logging.info(f'input_train shape:\n\t{input_train.shape}')
-            logging.info(f'condition_train shape:\n\t{condition_train.shape}')
-            logging.info(f'input_val shape:\n\t{input_val.shape}')
-            logging.info(f'condition_val shape:\n\t{condition_val.shape}')
+        logging.info(f'input_train shape:\n\t{input_train.shape}')
+        logging.info(f'condition_train shape:\n\t{condition_train.shape}')
+        logging.info(f'input_val shape:\n\t{input_val.shape}')
+        logging.info(f'condition_val shape:\n\t{condition_val.shape}')
 
         logging.info('\nSave the files...')
         np.save(f'../data/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', condition_train)
@@ -246,7 +223,6 @@ if __name__ == '__main__':
                     f"\tT_condition: {T_condition}\n"
                     f"\tT_gen: {T_gen}\n"
                     f"\tbatch_size: {batch_size} (num_batches: {input_train.shape[0]//batch_size})\n"
-                    f"\tcondition: {args.condition}\n"
                     f"\tloss: {args.loss}\n"
                     f"\tpatience: {patience}\n"
                     f"\tjob_id: {job_id}\n")
@@ -257,48 +233,31 @@ if __name__ == '__main__':
     optimizer = [generator_optimizer, discriminator_optimizer]
 
     # Build the models
-    if args.condition== True:
-        generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, True)
-        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, True, args.loss)
-        feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
-    else:
-        generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, latent_dim, False)
-        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, False, args.loss)
+    generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, True)
+    discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, True, args.loss)
+    feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
 
     logging.info('\n[Model] ---------- MODEL SUMMARIES ----------')
     generator_model.summary(print_fn=logging.info)
     logging.info('\n')
     discriminator_model.summary(print_fn=logging.info)
     logging.info('[Model] ---------- DONE ----------\n')
-    # exit()
 
     # Define a dictionary to store the metrics
     metrics = {'discriminator_loss': [], 'gen_loss': [], 'real_disc_out': [], 'fake_disc_out': []}
 
     # Define checkpoint and checkpoint manager
-    # job_id_restore = 192418
     checkpoint_prefix = f"models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/"
     checkpoint = tf.train.Checkpoint(optimizer=optimizer,
                                     generator_model=generator_model,
                                     discriminator_model=discriminator_model)
     checkpoint_manager = tf.train.CheckpointManager(checkpoint, directory=checkpoint_prefix, max_to_keep=3)
     checkpoint.restore(checkpoint_manager.latest_checkpoint)
-    # # save the models
-    # logging.info('Saving the models...')
-    # generator_model.save(f'models/{job_id_restore}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.h5')
-    # discriminator_model.save(f'models/{job_id_restore}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.h5')
-    # logging.info('Done.')
-    # exit()
-
 
     # Train the GAN.
     logging.info('\n[Training] ---------- START TRAINING ----------')
-    if args.condition == True:
-        dataset_train = tf.data.Dataset.from_tensor_slices((condition_train, input_train)).batch(batch_size)
-        dataset_val = tf.data.Dataset.from_tensor_slices((condition_val, input_val)).batch(batch_size)
-    else:
-        dataset_train = tf.data.Dataset.from_tensor_slices((train)).batch(batch_size)
-        dataset_val = tf.data.Dataset.from_tensor_slices((val)).batch(batch_size)
+    dataset_train = tf.data.Dataset.from_tensor_slices((condition_train, input_train)).batch(batch_size)
+    dataset_val = tf.data.Dataset.from_tensor_slices((condition_val, input_val)).batch(batch_size)
 
     num_batches = len(dataset_train)
     logging.info(f'Number of batches:\n\t{num_batches}\n')
@@ -308,55 +267,34 @@ if __name__ == '__main__':
     for epoch in range(n_epochs):
         j = 0
         noises = []
-        if args.condition == True:
-            for batch_condition, batch_real_samples in dataset_train:
-                j += 1
-                batch_size = batch_real_samples.shape[0]
-                generator_model, discriminator_model, noise = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, feature_extractor, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
-                noises.append(noise)
-        else:
-            for batch_real_samples in dataset_train:
-                j += 1
-                batch_condition = np.zeros_like(batch_real_samples)
-                batch_size = batch_real_samples.shape[0]
-                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
+        for batch_condition, batch_real_samples in dataset_train:
+            j += 1
+            batch_size = batch_real_samples.shape[0]
+            generator_model, discriminator_model, noise = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, feature_extractor, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args)
+            noises.append(noise)
         # Save the models via checkpoint
         checkpoint_manager.save()
 
         if epoch % 10 == 0:
             logging.info('Creating a time series with the generated samples...')
-            # Note that even you define number_of_batches_plot, you modified plot_sample in order to plot all the batches
-            # number_of_batches_plot = 100 
             features = orderbook_df.columns[:n_features_gen]
-            plot_samples(dataset_train, generator_model, noises, features, T_gen, T_condition, latent_dim, n_features_gen, job_id, epoch, None, args, final=False)
+            plot_samples(dataset_train, generator_model, noises, features, T_gen, T_condition, latent_dim, n_features_gen, job_id, epoch, None, args)
             logging.info('Done')
 
         if epoch > 1:
             logging.info('Check Early Stopping Criteria on Validation Set')
 
+            # Here for each batch of the validation set I compute the wasserstein distance between the real samples
+            # and the generated ones. Then I take the mean over all the batches and all the features.
             wass_dist = [[] for _ in range(n_features_gen)]
-            if args.condition == True:
-                for val_batch_condition, val_batch in dataset_val:
-                    batch_size = val_batch.shape[0]
-                    noise = tf.random.normal([batch_size, T_gen*latent_dim, n_features_gen])
-                    generated_samples = generator_model([noise, val_batch_condition], training=True)
-                    for feature in range(n_features_gen):
-                        for i in range(generated_samples.shape[0]):
-                            w = wasserstein_distance(val_batch[i, :, feature], generated_samples[i, :, feature])
-                            wass_dist[feature].append(w)
-            else:
-                for val_batch in dataset_val:
-                    batch_size = val_batch.shape[0]
-                    noise = tf.random.normal([batch_size, (T_gen+T_condition)*latent_dim, n_features_input])
-                    generated_samples = generator_model(noise, training=True)
-                    for feature in range(generated_samples.shape[2]):
-                        for i in range(generated_samples.shape[0]):
-                            w = wasserstein_distance(val_batch[i, :, feature], generated_samples[i, :, feature])
-                            wass_dist[feature].append(w)
-
-            # Compute the mean of all the wasserstein distances. The idea is to track this quantity
-            # that is an aggregate measure of how the generator is able to generate samples that are
-            # similar to the real ones.
+            for val_batch_condition, val_batch in dataset_val: # Iteration over the batches
+                batch_size = val_batch.shape[0]
+                noise = tf.random.normal([batch_size, T_gen*latent_dim, n_features_gen])
+                generated_samples = generator_model([noise, val_batch_condition], training=True)
+                for feature in range(n_features_gen): # Iteration over the features
+                    for i in range(generated_samples.shape[0]): # Iteration over the samples
+                        w = wasserstein_distance(val_batch[i, :, feature], generated_samples[i, :, feature])
+                        wass_dist[feature].append(w)
             wass_dist = np.mean(np.array(wass_dist).flatten())
             wass_to_plot.append(wass_dist)
 
@@ -380,18 +318,11 @@ if __name__ == '__main__':
                 logging.info('Saving the models...')
                 generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model_{epoch-patience}.h5')
                 discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model_{epoch-patience}.h5')
-                logging.info('Plotting final generated samples...')
 
-                if args.condition == True:
-                    idx = np.random.randint(0, len(dataset_val)-1)
-                    batch_size = len(list(dataset_val.as_numpy_iterator())[idx][0])
-                    noise = tf.random.normal([batch_size, T_gen*latent_dim, n_features_input])
-                    gen_input = [noise, list(dataset_val.as_numpy_iterator())[idx][0]]
-                else:
-                    noise = tf.random.normal([batch_size, (T_gen+T_condition)*latent_dim, n_features_input])
-                    gen_input = noise
-
-                # plot_samples(dataset_train, generator_model, noises, features, T_gen, T_condition, latent_dim, n_features_input, job_id, (epoch-patience), None, args, final=True)
+                idx = np.random.randint(0, len(dataset_val)-1)
+                batch_size = len(list(dataset_val.as_numpy_iterator())[idx][0])
+                noise = tf.random.normal([batch_size, T_gen*latent_dim, n_features_input])
+                gen_input = [noise, list(dataset_val.as_numpy_iterator())[idx][0]]
                 logging.info('Done')
                 break
             else:
@@ -402,11 +333,11 @@ if __name__ == '__main__':
             plt.plot(wass_to_plot)
             plt.xlabel('Epoch')
             plt.ylabel('Wasserstein distance')
-            plt.title(f'Mean over the features of the Wasserstein distances (Validaiton set)')
+            plt.title(f'Mean over the features of the Wasserstein distances (Validation set)')
             plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/0_wasserstein_distance.png')
             plt.close()
 
-    # Maybe it is not necessary, but I prefer to clear all the memory
+    # Maybe it is not necessary, but I prefer to clear all the memory and exit the script
     gc.collect()
     tf.keras.backend.clear_session()
     sys.exit()

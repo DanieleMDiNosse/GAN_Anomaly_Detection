@@ -165,7 +165,7 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
     # plot_model(generator_model, to_file='gen.png', show_shapes=True, show_layer_names=True)
     return generator_model
 
-def train_step(real_samples, condition, generator_model, discriminator_model, feature_extractor, optimizer, loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, use_condition, args):
+def train_step(real_samples, condition, generator_model, discriminator_model, feature_extractor, optimizer, loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args):
     discriminator_optimizer = optimizer[0]
     generator_optimizer = optimizer[1]
 
@@ -173,13 +173,7 @@ def train_step(real_samples, condition, generator_model, discriminator_model, fe
         disc_step = 1
     elif loss == 'wasserstein':
         disc_step = 5
-
-    if use_condition == True:
-        noise = tf.random.normal([batch_size, T_gen*latent_dim, real_samples.shape[2]])
-    else:
-        noise = tf.random.normal([batch_size, (T_gen+T_condition)*latent_dim, real_samples.shape[2]])
-    
-    # Create a GradientTape for the conditioner, generator, and discriminator.
+    # Create a GradientTape for the generator and the discriminator.
     # GrandietTape collects all the operations that are executed inside it.
     # Then this operations are used to compute the gradients of the loss function with 
     # respect to the trainable variables. Remember that 'persistent=True' is needed
@@ -194,18 +188,12 @@ def train_step(real_samples, condition, generator_model, discriminator_model, fe
     # Step 5: Apply the gradients to the optimizer
 
     # Discriminator training
+    noise = tf.random.normal([batch_size, T_gen*latent_dim, real_samples.shape[2]])
     for _ in range(disc_step):
         with tf.GradientTape() as disc_tape:
-            if use_condition == True:
-                generated_samples = generator_model([noise, condition], training=True)
-                real_output = discriminator_model([real_samples, condition], training=True)
-                fake_output = discriminator_model([generated_samples, condition], training=True)
-                # real_features_list = feature_extractor(real_samples)
-                # generated_features_list = feature_extractor(generated_samples)
-            else:
-                generated_samples = generator_model(noise, training=True)
-                real_output = discriminator_model(real_samples, training=True)
-                fake_output = discriminator_model(generated_samples, training=True)
+            generated_samples = generator_model([noise, condition], training=True)
+            real_output = discriminator_model([real_samples, condition], training=True)
+            fake_output = discriminator_model([generated_samples, condition], training=True)
 
             if loss == 'original':
                 discriminator_loss = compute_discriminator_loss(real_output, fake_output)
@@ -221,14 +209,10 @@ def train_step(real_samples, condition, generator_model, discriminator_model, fe
 
     # Generator training
     with tf.GradientTape() as gen_tape:
-        if use_condition == True:
-            generated_samples = generator_model([noise, condition], training=True)
-            fake_output = discriminator_model([generated_samples, condition], training=True)
-            real_features_list = feature_extractor([real_samples, condition])
-            generated_features_list = feature_extractor([generated_samples, condition])
-        else:
-            generated_samples = generator_model(noise, training=True)
-            fake_output = discriminator_model(generated_samples, training=True)
+        generated_samples = generator_model([noise, condition], training=True)
+        fake_output = discriminator_model([generated_samples, condition], training=True)
+        real_features_list = feature_extractor([real_samples, condition])
+        generated_features_list = feature_extractor([generated_samples, condition])
 
         if loss == 'original':
             generator_loss = compute_generator_loss(fake_output)
@@ -383,7 +367,6 @@ if __name__ == '__main__':
     parser.add_argument('-nld', '--n_layers_disc', help='Number of hidden layers in the discriminator', type=int)
     parser.add_argument('-tg', '--type_gen', help='Type of generator model (conv, lstm, dense)', type=str)
     parser.add_argument('-td', '--type_disc', help='Type of discriminator model (conv, lstm, dense)', type=str)
-    parser.add_argument('-c', '--condition', action='store_true', help='Conditioning on the first T_condition time steps')
     parser.add_argument('-Tc', '--T_condition', help='Number of time steps to condition on', type=int, default=1)
     parser.add_argument('-Tg', '--T_gen', help='Number of time steps to generate', type=int, default=1)
     parser.add_argument('-ls', '--loss', help='Loss function (original, wasserstein)', type=str, default='original')
@@ -464,14 +447,13 @@ if __name__ == '__main__':
     logging.info(f'Train shape:\n\t{train.shape}\nValidation shape:\n\t{val.shape}')
     logging.info('Done.')
 
-    if args.condition == True:
-        logging.info('\nDividing each window into condition and input...')
-        condition_train, input_train = train[:, :T_condition, :], train[:, T_condition:, :]
-        condition_val, input_val = val[:, :T_condition, :], val[:, T_condition:, :]
-        logging.info('Done.')
+    logging.info('\nDividing each window into condition and input...')
+    condition_train, input_train = train[:, :T_condition, :], train[:, T_condition:, :]
+    condition_val, input_val = val[:, :T_condition, :], val[:, T_condition:, :]
+    logging.info('Done.')
 
     # Use logging.info to logging.info all the hyperparameters
-    logging.info(f'\nHYPERPARAMETERS:\n\tlatent_dim per time: {latent_dim}\n\tn_features: {n_features_input}\n\tn_epochs: {n_epochs}\n\tT_condition: {T_condition}\n\tT_gen: {T_gen}\n\tbatch_size: {batch_size} -> num_batches: {train.shape[0]//batch_size}\n\tcondition: {args.condition}\n\tloss: {args.loss}\n')
+    logging.info(f'\nHYPERPARAMETERS:\n\tlatent_dim per time: {latent_dim}\n\tn_features: {n_features_input}\n\tn_epochs: {n_epochs}\n\tT_condition: {T_condition}\n\tT_gen: {T_gen}\n\tbatch_size: {batch_size} -> num_batches: {train.shape[0]//batch_size}\n\tloss: {args.loss}\n')
 
     # Define the optimizers
     generator_optimizer = tf.keras.optimizers.Adam(1e-4)
@@ -482,13 +464,9 @@ if __name__ == '__main__':
     binary_crossentropy = tf.keras.losses.BinaryCrossentropy(from_logits=False)
 
     # Build the models
-    if args.condition== True:
-        generator_model = build_generator(args.n_layers_gen, args.type_gen, True, T_gen, T_condition, n_features_input, latent_dim, True)
-        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, True, T_gen, T_condition, n_features_input, True)
-        feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
-    else:
-        generator_model = build_generator(args.n_layers_gen, args.type_gen, True, T_gen, T_condition, n_features_input, latent_dim, False)
-        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, True, T_gen, T_condition, n_features_input, False)
+    generator_model = build_generator(args.n_layers_gen, args.type_gen, True, T_gen, T_condition, n_features_input, latent_dim, True)
+    discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, True, T_gen, T_condition, n_features_input, True)
+    feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
 
     logging.info('\n[Model] ---------- MODEL SUMMARIES ----------')
     logging.info(f'Data used\n\t{args.data} {args.num_dim}D')
@@ -532,19 +510,12 @@ if __name__ == '__main__':
 
     for epoch in range(n_epochs):
         j = 0
-        if args.condition == True:
-            for batch_condition, batch_real_samples in dataset_train:
-                j += 1
-                batch_size = batch_real_samples.shape[0]
-                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, feature_extractor, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
-                # if j == 10:
-                #     break
-        else:
-            for batch_real_samples in dataset_train:
-                j += 1
-                batch_condition = np.zeros_like(batch_real_samples)
-                batch_size = batch_real_samples.shape[0]
-                generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args.condition, args)
+        for batch_condition, batch_real_samples in dataset_train:
+            j += 1
+            batch_size = batch_real_samples.shape[0]
+            generator_model, discriminator_model = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, feature_extractor, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args)
+            # if j == 10:
+            #     break
         # Save the models via checkpoint
         checkpoint_manager.save()
     
