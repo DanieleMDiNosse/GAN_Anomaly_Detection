@@ -104,7 +104,7 @@ if __name__ == '__main__':
     message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][:N]
 
     # Preprocess the data using preprocessing_orderbook_df
-    orderbook_dfs, discard_times_list = zip(*[(preprocessing_orderbook_df(df, msg, discard_time=1800, sampling_freq=40, n_levels=total_depth)) for df, msg in zip(orderbook_dfs, message_dfs)])
+    orderbook_dfs, discard_times_list = zip(*[(preprocessing_orderbook_df(df, msg, discard_time=1800)) for df, msg in zip(orderbook_dfs, message_dfs)])
     logging.info(f'Discarded time (sod, eod):\n\t{[discard_times for discard_times in discard_times_list]}')
     # Merge all the dataframes into a single one
     orderbook_df = pd.concat(orderbook_dfs, ignore_index=True)
@@ -154,7 +154,7 @@ if __name__ == '__main__':
         logging.info(f'Number of windows: {length}')
 
         # Create a memmap to store the scaled data.
-        final_shape = (length, window_size, n_features_input)
+        final_shape = (length-num_pieces*(window_size-1), window_size, n_features_input)
         fp = np.memmap("final_data.dat", dtype='float32', mode='w+', shape=final_shape)
 
         start_idx = 0
@@ -318,11 +318,12 @@ if __name__ == '__main__':
                 logging.info('Saving the models...')
                 generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model_{epoch-patience}.h5')
                 discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model_{epoch-patience}.h5')
-
-                idx = np.random.randint(0, len(dataset_val)-1)
-                batch_size = len(list(dataset_val.as_numpy_iterator())[idx][0])
-                noise = tf.random.normal([batch_size, T_gen*latent_dim, n_features_input])
-                gen_input = [noise, list(dataset_val.as_numpy_iterator())[idx][0]]
+                # Save the 'best' noise
+                np.save(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/noises.npy', noises)
+                # idx = np.random.randint(0, len(dataset_val)-1)
+                # batch_size = len(list(dataset_val.as_numpy_iterator())[idx][0])
+                # noise = tf.random.normal([batch_size, T_gen*latent_dim, n_features_input])
+                # gen_input = [noise, list(dataset_val.as_numpy_iterator())[idx][0]]
                 logging.info('Done')
                 break
             else:

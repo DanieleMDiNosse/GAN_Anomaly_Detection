@@ -63,7 +63,7 @@ def prices_and_volumes(orderbook):
     return bid_prices, bid_volumes, ask_prices, ask_volumes
 
 
-def preprocessing_orderbook_df(orderbook, message, sampling_freq, discard_time, n_levels):
+def preprocessing_orderbook_df(orderbook, message, discard_time):
     # Take the Time column of message and add it to orderbook
     orderbook['Time'] = message['Time']
     # Check the Time column and find the index k such that (orderbook['Time'][k] - orderbook['Time'][0])=discard_time
@@ -365,9 +365,9 @@ def explore_latent_space_loss(candidate_noise, condition, x_target, generator, o
     candidate_noise = np.reshape(candidate_noise, original_shape)
 
     candidate_gen = generator([candidate_noise, condition])
-    candidate_gen = np.array([candidate_gen.numpy()[:, 0, :]])
+    candidate_gen = np.array(candidate_gen.numpy()[0])
     logging.info(f'candidate_gen.shape:\n\t{candidate_gen.shape}')
-    x_target = np.array([x_target.numpy()[:, 0, :]])
+    x_target = np.array(x_target.numpy()[0])
     corr = np.corrcoef(x_target.ravel(), candidate_gen.ravel())[0, 1]
     loss = 1 - corr
     return loss
@@ -528,6 +528,93 @@ def plot_samples(dataset, generator_model, noises, features, T_real, T_condition
     
     return None
 
+def correlation_matrix(dataset, generator_model, noises, scaler, T_real, n_features_gen, job_id, bootstrap_iterations=1000):
+    generated_samples = []
+    real_samples = []
+    k = 0
+    for batch_condition, batch in dataset:
+        gen_sample = generator_model([noises[k], batch_condition])
+        if scaler == None:
+            gen_sample = transform_and_reshape(gen_sample, T_real, n_features_gen)
+            batch = transform_and_reshape(batch, T_real, n_features_gen)
+        else:
+            batch = scaler.inverse_transform(tf.reshape(batch, [batch.shape[0], batch.shape[1]*batch.shape[2]])).reshape(batch.shape)
+            gen_sample = scaler.inverse_transform(tf.reshape(gen_sample, [gen_sample.shape[0], gen_sample.shape[1]*gen_sample.shape[2]])).reshape(gen_sample.shape)
+        for i in range(gen_sample.shape[0]):
+            # All the appended samples will be of shape (T_real, n_features_gen)
+            generated_samples.append(gen_sample[i, :, :])
+            real_samples.append(batch[i, :, :])
+        k += 1
+    
+    generated_samples = np.array(generated_samples)
+    real_samples = np.array(real_samples)
+    generated_samples = generated_samples.reshape(generated_samples.shape[0]*generated_samples.shape[1], generated_samples.shape[2])
+    real_samples = real_samples.reshape(real_samples.shape[0]*real_samples.shape[1], real_samples.shape[2])
+
+    generated_samples_bootstrap = np.copy(generated_samples)
+    real_samples_bootstrap = np.copy(real_samples)
+
+    correlations_gen = np.zeros(shape=(bootstrap_iterations, generated_samples.shape[1], generated_samples.shape[1]))
+    correlations_real = np.zeros(shape=(bootstrap_iterations, generated_samples.shape[1], generated_samples.shape[1]))
+    for i in range(bootstrap_iterations):
+        # Shuffle randomly the generated samples and the real samples
+        np.random.shuffle(generated_samples_bootstrap)
+        np.random.shuffle(real_samples_bootstrap)
+        # Compute the correlation matrix
+        correlation_matrix_gen = np.corrcoef(generated_samples_bootstrap, rowvar=False)
+        correlation_matrix_real = np.corrcoef(real_samples_bootstrap, rowvar=False)
+        correlations_gen[i, :, :] = correlation_matrix_gen
+        correlations_real[i, :, :] = correlation_matrix_real
+
+    # Initialize an array to store the stacked elements
+    stacked_elements_gen = np.zeros((bootstrap_iterations, n_features_gen*(n_features_gen-1)//2))
+    stacked_elements_real = np.zeros((bootstrap_iterations, n_features_gen*(n_features_gen-1)//2))
+    # Fill the stacked elements array
+    k = 0
+    for i in range(n_features_gen):
+        for j in range(i+1, n_features_gen):
+            # Extract the element at position (i, j) from each matrix and stack them
+            stacked_elements_gen[:, k] = [mat[i, j] for mat in correlations_gen]
+            stacked_elements_real[:, k] = [mat[i, j] for mat in correlations_real]
+            k += 1
+
+    # Now compute the standard deviations for each set of elements
+    standard_deviations_gen = np.std(stacked_elements_gen, axis=0)
+    standard_deviations_real = np.std(stacked_elements_real, axis=0)
+
+    correlation_matrix_gen = np.corrcoef(generated_samples, rowvar=False)
+    correlation_matrix_real = np.corrcoef(real_samples, rowvar=False)
+    features = np.array([[f'ask_volume_{i} (normal)',f'bid_volume_{i} (anomaly)'] for i in range(1, int(0.5*generated_samples.shape[1])+1)]).flatten()
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
+    axes[0].imshow(correlation_matrix_gen, cmap='coolwarm', vmin=-1, vmax=1)
+    axes[0].set_title('Correlation Matrix (generated samples)')
+    axes[0].set_xticks(range(generated_samples.shape[1]))
+    axes[0].set_yticks(range(generated_samples.shape[1]))
+    axes[0].set_xticklabels(features, rotation=90)
+    axes[0].set_yticklabels(features)
+    # Display the correlation values on the heatmap
+    for i in range(correlation_matrix_gen.shape[0]):
+        for j in range(correlation_matrix_gen.shape[1]):
+            text_str = f"{round(correlation_matrix_gen[i, j], 2)} ± {round(2*standard_deviations_gen[i, j], 2)}"
+            axes[0].text(j, i, text_str,
+                    ha='center', va='center',
+                    color='black')
+    axes[1].imshow(correlation_matrix_real, cmap='coolwarm', vmin=-1, vmax=1)
+    axes[1].set_title('Correlation Matrix (real samples)')
+    axes[1].set_xticks(range(generated_samples.shape[1]))
+    axes[1].set_yticks(range(generated_samples.shape[1]))
+    axes[1].set_xticklabels(features, rotation=90)
+    axes[1].set_yticklabels(features)
+    for i in range(correlation_matrix_real.shape[0]):
+        for j in range(correlation_matrix_real.shape[1]):
+            text_str = f"{round(correlation_matrix_real[i, j], 2)} ± {round(2*standard_deviations_real[i, j], 2)}"
+            axes[0].text(j, i, text_str,
+                    ha='center', va='center',
+                    color='black')
+    path = [s for s in os.listdir('plots/') if job_id in s][0]
+    plt.savefig(f'{path}/6_correlation_matrix_final.png')
+    plt.close()
+
 def create_animated_gif(job_id):
     '''This function takes as input the job id and creates an animated gif from the images
     stored in the plots folder.'''
@@ -682,33 +769,38 @@ def anomaly_injection_message(message_df, anomaly_type):
         message_df.loc[index : index]['Direction'] = 1
     return message_df
 
-def anomaly_injection_orderbook(orderbook, anomaly_type):
+def anomaly_injection_orderbook(fp, means, stds, T_condition, depth, std_ampl, anomaly_type):
     '''This function takes as input a orderbook dataframe and injects anomalies in it. There will be
     two types of anomalies: the first one is the random submissions of enormous orders (buy or sell)
     at a random price, while the second one consists in filling one side of the LOB with a lot of orders.'''
-    # Select the 1% of the data to inject anomalies
-    n_anomalies = int(len(orderbook) * 0.01)
-    if anomaly_type == 'big_order':
-        # Select randomly the indices where to inject the big orders
-        indices = np.random.choice(len(orderbook), n_anomalies, replace=False)
-        orderbook.loc[indices] = 100000
-    if anomaly_type == 'fill_side':
-        columns = orderbook.columns
-        random_number_1 = np.random.normal()
-        random_number_2 = np.random.randint(0, orderbook.shape[0]-10)
-        if random_number_1 < 0:
-            bid = [column for column in columns if 'bid' in column]
-            orderbook.loc[random_number_2: random_number_2+10, bid] = 1000
-            print(bid)
-            print(random_number_2)
-            print(orderbook.iloc[random_number_2: random_number_2+10])
-        else:
-            ask = [column for column in columns if 'ask' in column]
-            orderbook.loc[random_number_2: random_number_2+10, ask] = 1000
-            print(ask)
-            print(random_number_2)
-            print(orderbook.iloc[random_number_2: random_number_2+10])
-    return orderbook
+    # create a copy of fp
+    data = fp.copy()
+    # Select the % of the data to inject anomalies
+    n_anomalies = int(len(data) * 0.005)
+    chosen_windows = []
+    for _ in range(n_anomalies):
+        chosen_window = np.random.randint(0, data.shape[0])
+        chosen_timestamp = np.random.randint(T_condition, data.shape[1])
+        chosen_windows.append(chosen_window)
+
+        if anomaly_type == 'big_order':
+            chosen_feature = np.random.randint(0, (2*depth))
+            logging.info(f'Chosen feature: {chosen_feature}')
+            if chosen_feature % 2 == 0:
+                anomaly = means[chosen_feature] + stds[chosen_feature]*std_ampl
+            else:
+                anomaly = means[chosen_feature] - stds[chosen_feature]*std_ampl
+            data[chosen_window, chosen_timestamp, chosen_feature] = anomaly
+
+        if anomaly_type == 'fill_side':
+            random_number_1 = np.random.normal()
+            if random_number_1 < 0:
+                bid_idxs = np.arange(1, fp.shape[2], 2)
+                data[chosen_window, chosen_timestamp, bid_idxs] = means[bid_idxs] - stds[bid_idxs]*std_ampl
+            else:
+                ask_idxs = np.arange(0, fp.shape[2], 2)
+                data[chosen_window, chosen_timestamp, ask_idxs] = means[ask_idxs] + stds[ask_idxs]*std_ampl
+    return data, chosen_windows
 
 def compute_spread(orderbook):
     '''This function computes the spread of the orderbook dataframe.'''
