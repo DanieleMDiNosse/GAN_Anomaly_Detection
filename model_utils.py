@@ -246,7 +246,6 @@ def compute_feature_matching_loss(real_features_list, generated_features_list):
               for real, generated in zip(real_features_list, generated_features_list)]
     return tf.reduce_mean(losses)  # Average over all the feature matching losses
 
-
 def compute_discriminator_loss(real_output, fake_output):
     binary_crossentropy = tf.keras.losses.BinaryCrossentropy(from_logits=False)
     real_loss = binary_crossentropy(tf.ones_like(real_output), real_output)
@@ -317,48 +316,12 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
     plt.legend()
     plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/1_disc_output.png')
 
-    # if generated_samples.shape[1] == 1:
-    #     plt.figure(figsize=(10, 5), tight_layout=True)
-    #     plt.plot(generated_samples)
-    #     plt.xlabel('Time (Events)')
-    #     plt.ylabel('Value')
-    #     plt.title(f'Generated sample_{epoch}_{i}')
-    #     plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers}_{args.data}/generated_samples_{epoch}_{i}.png')
-
-    #     plt.figure(figsize=(10, 5), tight_layout=True)
-    #     plt.plot(real_samples, label='Real')
-    #     plt.xlabel('Time (Events)')
-    #     plt.ylabel('Value')
-    #     plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers}_{args.data}/000_real_samples.png')
-    # else:
-    #     # Plot a chosen generated sample
-    #     fig, axes = plt.subplots(generated_samples.shape[1], 1, figsize=(10, 10), tight_layout=True)
-    #     for j, feature in zip(range(generated_samples.shape[1]), features):
-    #         axes[j].plot(generated_samples[:, j])
-    #         axes[j].set_title(f'Generated {feature}_{epoch}_{i}')
-    #     axes[j].set_xlabel('Time (Events)')
-    #     plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers}_{args.data}/generated_samples_{epoch}_{i}.png')
-
-    #     # Plot a chosen real sample
-    #     fig, axes = plt.subplots(real_samples.shape[1], 1, figsize=(10, 10), tight_layout=True)
-    #     for j, feature in zip(range(real_samples.shape[1]), features):
-    #         axes[j].plot(real_samples[:, j])
-    #         axes[j].set_title(f'Real {feature}')
-    #     axes[j].set_xlabel('Time (Events)')
-    #     plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers}_{args.data}/000_real_samples.png')
-
-    # # Create an animated gif of the generated samples
-    # if (i+50)/num_batches > 1:
-    #     logging.info('Creating animated gif...')
-    #     create_animated_gif(job_id, epoch, args.type_gen, args.type_disc, args.n_layers, args.data)
-
     plt.close('all')
     return None
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='''This script is aimed to preprocess the data for model training. There is no much work to do: the idea is to simply feed the GAN with a multivariate time series
-                        composed by a sliding window that shifts by one time step each time.''')
+        description='''This script contains several functions for building and training a GAN. It has been used also as test script for the GAN on some synthetic data.''')
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
     parser.add_argument('-d', '--data', type=str, help='Which data to use (sine, step)')
@@ -518,88 +481,6 @@ if __name__ == '__main__':
             #     break
         # Save the models via checkpoint
         checkpoint_manager.save()
-    
-        # wass_dist = [[] for i in range(n_features_input)]
-        # logging.info('\n---------- Check Early Stopping Criteria on Validation Set ----------')
-
-        # if args.condition == True:
-        #     for val_batch_condition, val_batch in dataset_val:
-        #         batch_size = val_batch.shape[0]
-        #         noise = tf.random.normal([batch_size, T_gen*10, n_features_input])
-        #         generated_samples = generator_model([noise, val_batch_condition], training=True)
-        #         for feature in range(generated_samples.shape[2]):
-        #             for i in range(generated_samples.shape[0]):
-        #                 w = wasserstein_distance(val_batch[i, :, feature], generated_samples[i, :, feature])
-        #                 wass_dist[feature].append(w)
-        # else:
-        #     for val_batch in dataset_val:
-        #         batch_size = val_batch.shape[0]
-        #         noise = tf.random.normal([batch_size, (T_gen+T_condition)*10, n_features_input])
-        #         generated_samples = generator_model(noise, training=True)
-        #         for feature in range(generated_samples.shape[2]):
-        #             for i in range(generated_samples.shape[0]):
-        #                 w = wasserstein_distance(val_batch[i, :, feature], generated_samples[i, :, feature])
-        #                 wass_dist[feature].append(w)
-
-        # # Plot the Wasserstein distances on different subplots and save the image
-        # if n_features_input == 1:
-        #     plt.figure(figsize=(10, 5), tight_layout=True)
-        #     plt.plot(wass_dist[0], alpha=0.7)
-        #     plt.plot([np.mean(wass_dist[0]) for i in range(len(wass_dist[0]))], linestyle='--', color='red')
-        #     plt.title(f'Wasserstein distance')
-        #     plt.xlabel('Iterations')
-        #     plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers}_{args.data}/000_wasserstein_{epoch}.png')
-        # else:
-        #     fig, axes = plt.subplots(n_features_input, 1, figsize=(10, 10), tight_layout=True)
-        #     for j, feature in zip(range(n_features_input), [f'Curve{i+1}' for i in range(n_features_input)]):
-        #         axes[j].plot(wass_dist[j], alpha=0.7)
-        #         axes[j].plot([np.mean(wass_dist[j]) for i in range(len(wass_dist[j]))], linestyle='--', color='red')
-        #         axes[j].set_title(f'Wasserstein distance {feature}')
-        #     axes[j].set_xlabel('Iterations')
-        #     plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers}_{args.data}/000_wasserstein_{epoch}.png')
-
-        # wass_dist = np.mean(np.array(wass_dist).flatten())
-
-        # logging.info(f'Wasserstein distance: {wass_dist}')
-        # # Check early stopping criteria
-        # if wass_dist < best_wass_dist:
-        #     best_wass_dist = wass_dist
-        #     best_gen_weights = generator_model.get_weights()
-        #     best_disc_weights = discriminator_model.get_weights()
-        #     patience_counter = 0
-        # else:
-        #     patience_counter += 1
-        
-        # if patience_counter >= patience:
-        #     logging.info(f"Early stopping on epoch {epoch}. Restoring best weights...")
-        #     generator_model.set_weights(best_gen_weights)  # restore best weights
-        #     discriminator_model.set_weights(best_disc_weights)
-        #     logging.info('Plotting final generated samples...')
-
-        #     if args.condition == True:
-        #         idx = np.random.randint(0, len(dataset_val)-1)
-        #         batch_size = len(list(dataset_val.as_numpy_iterator())[idx][0])
-        #         noise = tf.random.normal([batch_size, T_gen*10, n_features_input])
-        #         gen_input = [list(dataset_val.as_numpy_iterator())[idx][0], noise]
-        #     else:
-        #         noise = tf.random.normal([batch_size, (T_gen+T_condition)*10, n_features_input])
-        #         gen_input = noise
-
-        #     generated_samples = generator_model(gen_input, training=True)
-        #     generated_samples = generated_samples[0,:,:].numpy()
-        #     features = [f'Curve{i+1}' for i in range(generated_samples.shape[1])]
-
-        #     fig, axes = plt.subplots(generated_samples.shape[1], 1, figsize=(10, 10), tight_layout=True)
-        #     for j, feature in zip(range(generated_samples.shape[1]), features):
-        #         axes[j].plot(generated_samples[:, j])
-        #         axes[j].set_title(f'Generated {feature}_{epoch}_{j}')
-
-        #     axes[j].set_xlabel('Time (Events)')
-        #     plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers}_{args.data}/000_final_generated_samples_{epoch}.png')
-        #     logging.info('Done')
-        #     break
-        # else:
-        #     logging.info(f'Early stopping criterion not met. Patience counter:\n\t{patience_counter}')
 
         logging.info('Creating a time series with the generated samples...')
         number_of_batches_plot = 5

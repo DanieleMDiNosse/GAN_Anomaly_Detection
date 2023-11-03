@@ -20,7 +20,7 @@ from scipy.optimize import minimize
 
 def rename_columns(dataframes_folder_path):
     '''This function takes as input the path of the folder containing the dataframes and renames the columns
-    of the message and orderbook dataframes.
+    of the message and orderbook dataframes. Then, it saves the dataframes in the same folder.
     
     Parameters
     ----------
@@ -55,6 +55,18 @@ def rename_columns(dataframes_folder_path):
     return None
 
 def prices_and_volumes(orderbook):
+    '''This function takes as input the orderbook dataframe and returns the bid and ask prices and volumes.
+    
+    Parameters
+    ----------
+    orderbook : pandas dataframe
+        Orderbook dataframe.
+    
+    Returns
+    -------
+    bid_prices, bid_volumes, ask_prices, ask_volumes : numpy array
+        Arrays containing prices and volumes.'''
+
     n = orderbook.shape[1]
     bid_prices = np.array(orderbook[[f'Bid price {x}' for x in range(1, int(n/4)+1)]])
     bid_volumes = np.array(orderbook[[f'Bid size {x}' for x in range(1, int(n/4)+1)]])
@@ -64,6 +76,28 @@ def prices_and_volumes(orderbook):
 
 
 def preprocessing_orderbook_df(orderbook, message, discard_time):
+    '''This function takes as input the orderbook dataframe provided by LOBSTER.com and preprocessed via
+    rename_columns. It performs the following operations:
+    - Discard the first and last rows of the dataframe, since they are likely "non stationary"
+    - Sample the dataframe every 10 seconds
+    - Reset the index
+    - Drop the columns Order ID and Time
+    
+    Parameters
+    ----------
+    orderbook : pandas dataframe
+        Orderbook dataframe preprocessed via rename_columns.
+    message : pandas dataframe
+        Message dataframe preprocessed via rename_columns.
+    discard_time : int
+        Number of seconds to discard from the beginning and the end of the dataframe.
+    
+    Returns
+    -------
+    orderbook : pandas dataframe
+        Preprocessed orderbook dataframe.
+    [k, l] : list
+        List of two indexes: one corresponds to the 30th minute of the day and the other to the 30-minute-to-end minute.'''
     # Take the Time column of message and add it to orderbook
     orderbook['Time'] = message['Time']
     # Check the Time column and find the index k such that (orderbook['Time'][k] - orderbook['Time'][0])=discard_time
@@ -97,30 +131,10 @@ def preprocessing_orderbook_df(orderbook, message, discard_time):
     orderbook = orderbook.reset_index(drop=True)
     return orderbook, [k, l]
 
-# def lob_reconstruction(N, tick, bid_prices, bid_volumes, ask_prices, ask_volumes):
-#     n_columns = bid_prices.shape[1]
-#     m, M = bid_prices.min().min(), ask_prices.max().max()
-#     for event in tqdm(range(N), desc='Computing LOB snapshots'):
-#         # Create the price and volume arrays
-#         p_line = np.arange(m, M+tick, tick)
-#         volumes = np.zeros_like(p_line)
-
-#         # Create two dictionaries to store the bid and ask prices keys and volumes as values
-#         d_ask = {ask_prices[event][i]: ask_volumes[event][i] for i in range(int(n_columns))}
-#         d_bid = {bid_prices[event][i]: -bid_volumes[event][i] for i in range(int(n_columns))}
-
-#         # Create two boolean arrays to select the prices in the p_line array that are also in the bid and ask prices
-#         mask_bid, mask_ask = np.in1d(p_line, list(d_bid.keys())), np.in1d(p_line, list(d_ask.keys()))
-
-#         # Assign to the volumes array the volumes corresponding to the the bid and ask prices
-#         volumes[np.where(mask_bid)] = list(d_bid.values())
-#         volumes[np.where(mask_ask)] = list(d_ask.values())
-    
-#     return p_line, volumes
-
 def volumes_per_level(ask_prices, bid_prices, ask_volumes, bid_volumes, depth):
     '''This function takes as input the bid and ask prices and volumes and returns the volumes at each price level
-    for the first depth levels. Note that not all the levels are occupied.
+    for the first depth levels (consecutive levels are separated by one tick). Note that not all the levels are necessarily occupied.
+    Note also that the bid_volumes are net to be negative.
     
     Parameters
     ----------
@@ -133,7 +147,12 @@ def volumes_per_level(ask_prices, bid_prices, ask_volumes, bid_volumes, depth):
     bid_volumes : numpy array
         Array containing the bid volumes.
     depth : int
-        Depth of the LOB.'''
+        Depth of the LOB.
+        
+    Returns
+    -------
+    volume_ask, volume_bid : numpy array
+        Arrays containing the volumes at each price level for the first depth levels.'''
 
     volume_ask = np.zeros(shape=(ask_prices.shape[0], depth))
     volume_bid = np.zeros(shape=(ask_prices.shape[0], depth))
@@ -175,69 +194,6 @@ def divide_into_windows(data, window_size):
     for i in range(len(data) - window_size + 1):
         windows.append(data[i:i+window_size, :])
     return windows
-
-def sliding_windows_stat(data):
-    '''This function computes the statistics of the time intervals between two consecutive
-    windows. It returns a dataframe containing the mean and the standard deviation of the
-    time intervals for each window size. It uses another function, sliding_windows_stat_numba,
-    which is a numba implementation of the most time consuming part of the function.
-    
-    Parameters
-    ----------
-    data : pandas dataframe
-        Dataframe containing the message data.
-    
-    Returns
-    -------
-    timedeltas : list
-        List of the time intervals (real time) for each window size across all the dataset.
-    '''
-
-    times = data['Time'].values
-    #times = times / 1e9 # Convert to seconds
-    step = 100
-    window_size = [step*i for i in range(1, 21)]
-    timedeltas = []
-
-    for i in range(len(window_size)):
-        # Use the numba implementation for speedup
-        timedeltas.append(sliding_windows_stat_numba(times, nb.typed.List(window_size), i))
-
-    return timedeltas
-
-@nb.jit(nopython=True)
-def sliding_windows_stat_numba(times, window_size, i):
-    timedeltas = []
-    for j in range(times.shape[0] - window_size[i]):
-        timedelta = times[window_size[i] + j] - times[j]
-        timedeltas.append(timedelta/60) # Convert to minutes each timedelta
-    
-    return timedeltas
-
-@nb.jit(nopython=True)
-def divide_vector(vector, N):
-    '''This function takes as input a vector and divides it into N subvectors of the same
-    length. The last subvector can have a different length.
-    
-    Parameters
-    ----------
-    vector : numpy array
-        Vector to be divided.
-    N : int
-        Number of subvectors.
-    
-    Returns
-    -------
-    subvectors : list
-        List of subvectors.
-    '''
-    subvectors = []
-    length = int(vector.shape[0]/N)
-    for i in range(N):
-        subvectors.append(vector[i*length:(i+1)*length])
-    if vector.shape[0] % N != 0:
-        subvectors.append(vector[(i+1)*length:])
-    return subvectors
 
 def preprocessing_message_df(message_df, discard_time, sampling_freq):
     '''This function takes as input the message dataframe provided by LOBSTER.com and preprocessed via
@@ -350,6 +306,17 @@ def train_test_split(data, train_size=0.75):
     return train_data, test_data
 
 def compute_accuracy(outputs):
+    '''This function computes the accuracy of the discriminator.
+
+    Parameters
+    ----------
+    outputs : list
+        List containing the outputs of the discriminator.
+    
+    Returns
+    -------
+    total_accuracy : float
+        Total accuracy of the discriminator.'''
     if len(outputs) == 2:
         real_output, fake_output = outputs
         real_accuracy = tf.reduce_mean(tf.cast(tf.greater_equal(real_output, 0.5), tf.float32))
@@ -360,37 +327,19 @@ def compute_accuracy(outputs):
         total_accuracy = tf.reduce_mean(tf.cast(tf.less(fake_output, 0.5), tf.float32))
     return total_accuracy
 
-def explore_latent_space_loss(candidate_noise, condition, x_target, generator, original_shape):
-    # Reshape the flattened noise back to its original shape
-    candidate_noise = np.reshape(candidate_noise, original_shape)
-
-    candidate_gen = generator([candidate_noise, condition])
-    candidate_gen = np.array(candidate_gen.numpy()[0])
-    logging.info(f'candidate_gen.shape:\n\t{candidate_gen.shape}')
-    x_target = np.array(x_target.numpy()[0])
-    corr = np.corrcoef(x_target.ravel(), candidate_gen.ravel())[0, 1]
-    loss = 1 - corr
-    return loss
-
-def callback(xk):
-    # xk contains the current solution
-    # Compute and log the loss value (or other state information)
-    loss_value = explore_latent_space_loss(xk, condition, x_target, generator)
-    logging.info(f"At noise={xk}, Loss={loss_value}")
-
-def explore_latent_space(x_target, condition, latent_dim, T_gen, generator):
-    logging.info('Exploring the latent space...')
-    logging.info(f'x_target.shape:\n\t{x_target.shape}')
-    # condition = tf.reshape(condition, [1, condition.shape[0], condition.shape[1]])
-    logging.info(f'condition shape:\n\t{condition.shape}')
-    candidate_noise_flat = tf.random.normal([condition.shape[0], T_gen*latent_dim, condition.shape[2]]).numpy().ravel()
-    original_shape = (condition.shape[0], T_gen*latent_dim, condition.shape[2])
-    logging.info(f'candidate_noise.shape:\n\t{candidate_noise_flat.shape}')
-    result = minimize(explore_latent_space_loss, candidate_noise_flat, args=(condition, x_target, generator, original_shape), method='L-BFGS-B')# callback=callback)
-    logging.info(f'result:\n\t{result}')
-    return result.x
-
 def simple_rounding(n):
+    '''This function takes as input a numpy array and rounds each element to the nearest 100.
+    It is used to round the price values to the nearest price level (prices are discretized).
+    
+    Parameters
+    ----------
+    n : numpy array
+        Array containing the values to be rounded.
+    
+    Returns
+    -------
+    new_n : numpy array
+        Array containing the rounded values.'''
     new_n = np.zeros_like(n)
     for i,x in enumerate(n):
         r = x%100
@@ -400,17 +349,72 @@ def simple_rounding(n):
             new_n[i] = x + (100-r)
     return new_n
 
-def transform_and_reshape(tensor, T_real, n_features, c=10):
-    tensor_flat = tf.reshape(tensor, [-1, T_real * n_features]).numpy()
+def transform_and_reshape(tensor, T_gen, n_features, c=10):
+    '''This function takes as input a tensor of shape (batch_size, T_real, n_features) and transforms it
+    into a tensor of shape (batch_size, T_real, n_features) by applying the transformation x -> x^2 * sign(x).
+    This is the inverse transformation of the normalization applied to the data.
+    
+    Parameters
+    ----------
+    tensor : tensorflow tensor
+        Tensor to be transformed.
+    T_gen : int
+        Number of time steps of the generated samples.
+    n_features : int
+        Number of features of the generated samples.
+    c : int, optional
+        Constant equal to the inverse of the normalization constant. The default is 10.
+    
+    Returns
+    -------
+    tensor_flat : tensorflow tensor
+        Transformed tensor.
+    '''
+    tensor_flat = tf.reshape(tensor, [-1, T_gen * n_features]).numpy()
     tensor_flat = np.array([[x**2 * math.copysign(1, x) for x in row] for row in tensor_flat])*c
-    return tf.reshape(tensor_flat, [-1, T_real, n_features])
+    tensor_flat = tf.reshape(tensor_flat, [-1, T_gen, n_features])
+    return tensor_flat
 
 
-def plot_samples(dataset, generator_model, noises, features, T_real, T_condition, latent_dim, n_features_gen, job_id, epoch, scaler, args):
-    '''This function plots the generated samples, together with the real one and the empirical distribution of the generated samples.'''
+def plot_samples(dataset, generator_model, noises, features, T_gen, n_features_gen, job_id, epoch, scaler, args):
+    '''This function plots several metrics that track the training process of the GAN. Specifically, it plots:
+    - The generated samples
+    - The average LOB shape together with the p-values of the Welch's t-test
+    - The correlation matrix
+    - The histograms of the generated and real samples
+    Plots are saved into plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}
+
+    Parameters
+    ----------
+    dataset : tensorflow dataset
+        Dataset containing the real samples. The dataset must be of the form (batch_condition, batch).
+    generator_model : tensorflow model
+        Generator model.
+    noises : list
+        List containing the noises used to generate the samples.
+    features : list
+        List containing the features of the data.
+    T_gen : int
+        Number of time steps of the generated samples.
+    n_features_gen : int
+        Number of features of the generated samples.
+    job_id : string
+        Job id.
+    epoch : int
+        Epoch number.
+    scaler : sklearn scaler
+        Scaler used to scale the data. It can be None.
+    args : argparse object
+        Object containing the arguments passed to the script.
+
+    Returns
+    -------
+    None.
+
+    '''
 
     # Create two lists to store the generated and real samples. 
-    # These list will be of shape (batch_size*number_of_batches_plot, T_real, n_features_gen)
+    # These list will be of shape (batch_size*number_of_batches_plot, T_gen, n_features_gen)
     generated_samples = []
     real_samples = []
 
@@ -418,13 +422,13 @@ def plot_samples(dataset, generator_model, noises, features, T_real, T_condition
     for batch_condition, batch in dataset:
         gen_sample = generator_model([noises[k], batch_condition])
         if scaler == None:
-            gen_sample = transform_and_reshape(gen_sample, T_real, n_features_gen)
-            batch = transform_and_reshape(batch, T_real, n_features_gen)
+            gen_sample = transform_and_reshape(gen_sample, T_gen, n_features_gen)
+            batch = transform_and_reshape(batch, T_gen, n_features_gen)
         else:
             batch = scaler.inverse_transform(tf.reshape(batch, [batch.shape[0], batch.shape[1]*batch.shape[2]])).reshape(batch.shape)
             gen_sample = scaler.inverse_transform(tf.reshape(gen_sample, [gen_sample.shape[0], gen_sample.shape[1]*gen_sample.shape[2]])).reshape(gen_sample.shape)
         for i in range(gen_sample.shape[0]):
-            # All the appended samples will be of shape (T_real, n_features_gen)
+            # All the appended samples will be of shape (T_gen, n_features_gen)
             generated_samples.append(gen_sample[i, :, :])
             real_samples.append(batch[i, :, :])
         k += 1
@@ -528,20 +532,45 @@ def plot_samples(dataset, generator_model, noises, features, T_real, T_condition
     
     return None
 
-def correlation_matrix(dataset, generator_model, noises, scaler, T_real, n_features_gen, job_id, bootstrap_iterations=1000):
+def correlation_matrix(dataset, generator_model, noises, scaler, T_gen, n_features_gen, job_id, bootstrap_iterations=1000):
+    '''This function computes the correlation matrix of the generated samples and the real samples, together with the standard errors
+    evaluated using the bootstrap method. The correlation matrix is saved in the plots folder corresponding to job_id.
+
+    Parameters
+    ----------
+    dataset : tensorflow dataset
+        Dataset containing the real samples. The dataset must be of the form (batch_condition, batch).
+    generator_model : tensorflow model
+        Generator model.
+    noises : list
+        List containing the noises used to generate the samples.
+    scaler : sklearn scaler
+        Scaler used to scale the data. It can be None.
+    T_gen : int
+        Number of time steps of the generated samples.
+    n_features_gen : int
+        Number of features of the generated samples.
+    job_id : string
+        Job id.
+    bootstrap_iterations : int, optional
+        Number of bootstrap iterations. The default is 1000.
+    
+    Returns
+    -------
+    None.'''
     generated_samples = []
     real_samples = []
     k = 0
     for batch_condition, batch in dataset:
         gen_sample = generator_model([noises[k], batch_condition])
         if scaler == None:
-            gen_sample = transform_and_reshape(gen_sample, T_real, n_features_gen)
-            batch = transform_and_reshape(batch, T_real, n_features_gen)
+            gen_sample = transform_and_reshape(gen_sample, T_gen, n_features_gen)
+            batch = transform_and_reshape(batch, T_gen, n_features_gen)
         else:
             batch = scaler.inverse_transform(tf.reshape(batch, [batch.shape[0], batch.shape[1]*batch.shape[2]])).reshape(batch.shape)
             gen_sample = scaler.inverse_transform(tf.reshape(gen_sample, [gen_sample.shape[0], gen_sample.shape[1]*gen_sample.shape[2]])).reshape(gen_sample.shape)
         for i in range(gen_sample.shape[0]):
-            # All the appended samples will be of shape (T_real, n_features_gen)
+            # All the appended samples will be of shape (T_gen, n_features_gen)
             generated_samples.append(gen_sample[i, :, :])
             real_samples.append(batch[i, :, :])
         k += 1
@@ -750,29 +779,36 @@ def ar1_fit(data):
         logging.info(f"\tThe null hypothesis cannot be rejected")
     return None
 
-def anomaly_injection_message(message_df, anomaly_type):
-    '''This function takes as input a message dataframe and injects anomalies in it. There will be
-    two types of anomalies: the first one is the random submissions of enormous orders (buy or sell)
-    at a random price, while the second one consists in filling one side of the LOB with a lot of orders.'''
-    # Select the 1% of the data to inject anomalies
-    n_anomalies = int(len(message_df) * 0.01)
-    if anomaly_type == 'big_order':
-        # Select randomly the indices where to inject the big orders
-        indices = np.random.choice(len(message_df), n_anomalies, replace=False)
-        message_df.loc[indices]['Event type'] = 4
-        message_df.loc[indices]['Size'] = 100000
-    if anomaly_type == 'fill_side':
-        # Select randomly 10 consecutive indices where to inject the orders
-        index = np.random.choice(len(message_df)-11, 1)
-        message_df.loc[index: index+10]['Event type'] = 4
-        message_df.loc[index: index]['Size'] = 500
-        message_df.loc[index : index]['Direction'] = 1
-    return message_df
-
 def anomaly_injection_orderbook(fp, means, stds, T_condition, depth, std_ampl, anomaly_type):
-    '''This function takes as input a orderbook dataframe and injects anomalies in it. There will be
+    '''This function takes as input a orderbook dataframe and injects anomalies in it. There are
     two types of anomalies: the first one is the random submissions of enormous orders (buy or sell)
-    at a random price, while the second one consists in filling one side of the LOB with a lot of orders.'''
+    at a random level, while the second one consists in filling one side of the LOB with a lot of orders.
+    The anomalies are injected in the 0.5% of the windows. An anomaly is set as the mean of the level
+    plus/minus the standard deviation of the level multiplied by a constant std_ampl.
+    
+    Parameters
+    ----------
+    fp : numpy array
+        Array containing the data.
+    means : numpy array
+        Array containing the means of each level.
+    stds : numpy array
+        Array containing the standard deviations of each level.
+    T_condition : int
+        Number of time steps of the condition.
+    depth : int
+        Number of levels of the LOB.
+    std_ampl : float
+        Constant used to amplify the standard deviation.
+    anomaly_type : string
+        Type of anomaly to inject. It can be 'big_order' or 'fill_side'.
+    
+    Returns
+    -------
+    data : numpy array
+        Array containing the data with the anomalies injected.
+    chosen_windows : list
+        List containing the indexes of the windows where the anomalies have been injected.'''
     # create a copy of fp
     data = fp.copy()
     # Select the % of the data to inject anomalies
@@ -810,8 +846,7 @@ def compute_spread(orderbook):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='''This script is aimed to preprocess the data for model training. There is no much work to do: the idea is to simply feed the GAN with a multivariate time series
-                        composed by a sliding window that shifts by one time step each time.''')
+        description='''This script several functions used to pre and post process the data.''')
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
     parser.add_argument('-r', '--rename', action='store_true', help='Rename the colums of the dafaframes')

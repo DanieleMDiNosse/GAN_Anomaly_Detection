@@ -6,15 +6,12 @@ import pandas as pd
 from data_utils import *
 # Change the environment variable TF_CPP_MIN_LOG_LEVEL to 2 to avoid the messages about the compilation of the CUDA code
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-from data_utils import explore_latent_space, explore_latent_space_loss
 import argparse
 import logging
-from joblib import load
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='''This script is aimed to preprocess the data for model testing. There is no much work to do: the idea is to simply feed the GAN with a multivariate time series
-                        composed by a sliding window that shifts by one time step each time.''')
+        description='''This script is aimed to check the ability of the trained GAN to detect anomalies.''')
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
     parser.add_argument("-j", "--job_id", type=str, help=("Provide job id"))

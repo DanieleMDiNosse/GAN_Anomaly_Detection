@@ -21,8 +21,7 @@ import sys
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='''This script is aimed to preprocess the data for model training. There is no much work to do: the idea is to simply feed the GAN with a multivariate time series
-                        composed by a sliding window that shifts by one time step each time.''')
+        description='''Main script used to train the GAN.''')
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
     parser.add_argument('-N', '--N_days', type=int, help='Number of the day to consider')
@@ -278,7 +277,7 @@ if __name__ == '__main__':
         if epoch % 10 == 0:
             logging.info('Creating a time series with the generated samples...')
             features = orderbook_df.columns[:n_features_gen]
-            plot_samples(dataset_train, generator_model, noises, features, T_gen, T_condition, latent_dim, n_features_gen, job_id, epoch, None, args)
+            plot_samples(dataset_train, generator_model, noises, features, T_gen, n_features_gen, job_id, epoch, None, args)
             logging.info('Done')
 
         if epoch > 1:
