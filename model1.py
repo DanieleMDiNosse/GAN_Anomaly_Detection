@@ -136,7 +136,7 @@ if __name__ == '__main__':
     best_disc_weights = None
     best_wass_dist = float('inf')
     patience_counter = 0
-    patience = 200
+    patience = 250
 
     num_pieces = 5
     if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{N}days_orderbook_.npy'):
@@ -232,8 +232,14 @@ if __name__ == '__main__':
     optimizer = [generator_optimizer, discriminator_optimizer]
 
     # Build the models
-    generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, True)
-    discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, True, args.loss)
+    # generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, True)
+    # discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, True, args.loss)
+    # feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
+
+    # Load the models from models/194198.pbs01_dense_dense_3_3_50_original
+    prev_job_id = 194198
+    generator_model = tf.keras.models.load_model(f'models/{prev_job_id}.pbs01_dense_dense_3_3_50_original/generator_model_385.h5')
+    discriminator_model = tf.keras.models.load_model(f'models/{prev_job_id}.pbs01_dense_dense_3_3_50_original/discriminator_model_385.h5')
     feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
 
     logging.info('\n[Model] ---------- MODEL SUMMARIES ----------')
@@ -270,6 +276,7 @@ if __name__ == '__main__':
             j += 1
             batch_size = batch_real_samples.shape[0]
             generator_model, discriminator_model, noise = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, feature_extractor, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args)
+            # Append the noise
             noises.append(noise)
         # Save the models via checkpoint
         checkpoint_manager.save()
@@ -282,7 +289,6 @@ if __name__ == '__main__':
 
         if epoch > 1:
             logging.info('Check Early Stopping Criteria on Validation Set')
-
             # Here for each batch of the validation set I compute the wasserstein distance between the real samples
             # and the generated ones. Then I take the mean over all the batches and all the features.
             wass_dist = [[] for _ in range(n_features_gen)]
@@ -299,7 +305,7 @@ if __name__ == '__main__':
 
             logging.info(f'Wasserstein distance: {wass_dist}')
             # Check early stopping criteria
-            if wass_dist < best_wass_dist:
+            if wass_dist + 5e-3 < best_wass_dist:
                 logging.info(f'Wasserstein distance improved from {best_wass_dist} to {wass_dist}')
                 best_wass_dist = wass_dist
                 best_gen_weights = generator_model.get_weights()
@@ -310,7 +316,8 @@ if __name__ == '__main__':
                 patience_counter += 1
             
             if patience_counter >= patience:
-                logging.info(f"Early stopping on epoch {epoch}. Restoring best weights of epoch {epoch-patience}...")
+                best_epoch = epoch - patience
+                logging.info(f"Early stopping on epoch {epoch}. Restoring best weights of epoch {best_epoch}...")
                 generator_model.set_weights(best_gen_weights)  # restore best weights
                 discriminator_model.set_weights(best_disc_weights)
                 # Save the models
@@ -319,10 +326,6 @@ if __name__ == '__main__':
                 discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model_{epoch-patience}.h5')
                 # Save the 'best' noise
                 np.save(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/noises.npy', noises)
-                # idx = np.random.randint(0, len(dataset_val)-1)
-                # batch_size = len(list(dataset_val.as_numpy_iterator())[idx][0])
-                # noise = tf.random.normal([batch_size, T_gen*latent_dim, n_features_input])
-                # gen_input = [noise, list(dataset_val.as_numpy_iterator())[idx][0]]
                 logging.info('Done')
                 break
             else:
@@ -336,7 +339,17 @@ if __name__ == '__main__':
             plt.title(f'Mean over the features of the Wasserstein distances (Validation set)')
             plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/0_wasserstein_distance.png')
             plt.close()
+    noises = np.array(noises, dtype=object)
+    logging.info(f'noises shape:\n\t{noises.shape}')
+    logging.info(f'noises[0] shape:\n\t{noises[0].shape}')
+    np.save(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/noises.npy', noises)
+    logging.info('[Training] ---------- DONE ----------\n')
 
+    logging.info('Computing the errors on the correlation matrix using bootstrap...')
+    # At the end of the training, compute the errors on the correlation matrix using bootstrap.
+    # In order to do so, I need the best generator and the noises used.
+    correlation_matrix(dataset_train, generator_model, noises, best_epoch, None, T_gen, n_features_gen, job_id, bootstrap_iterations=1000)
+    logging.info('Done.')
     # Maybe it is not necessary, but I prefer to clear all the memory and exit the script
     gc.collect()
     tf.keras.backend.clear_session()

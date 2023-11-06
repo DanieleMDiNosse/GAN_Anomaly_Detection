@@ -532,7 +532,7 @@ def plot_samples(dataset, generator_model, noises, features, T_gen, n_features_g
     
     return None
 
-def correlation_matrix(dataset, generator_model, noises, scaler, T_gen, n_features_gen, job_id, bootstrap_iterations=1000):
+def correlation_matrix(dataset, generator_model, noises, best_epoch, scaler, T_gen, n_features_gen, job_id, bootstrap_iterations=1000):
     '''This function computes the correlation matrix of the generated samples and the real samples, together with the standard errors
     evaluated using the bootstrap method. The correlation matrix is saved in the plots folder corresponding to job_id.
 
@@ -544,6 +544,8 @@ def correlation_matrix(dataset, generator_model, noises, scaler, T_gen, n_featur
         Generator model.
     noises : list
         List containing the noises used to generate the samples.
+    best_epoch : int
+        Best epoch number.
     scaler : sklearn scaler
         Scaler used to scale the data. It can be None.
     T_gen : int
@@ -586,6 +588,7 @@ def correlation_matrix(dataset, generator_model, noises, scaler, T_gen, n_featur
     correlations_gen = np.zeros(shape=(bootstrap_iterations, generated_samples.shape[1], generated_samples.shape[1]))
     correlations_real = np.zeros(shape=(bootstrap_iterations, generated_samples.shape[1], generated_samples.shape[1]))
     for i in range(bootstrap_iterations):
+        logging.info(f'Bootstrap iteration {i+1}/{bootstrap_iterations}')
         # Shuffle randomly the generated samples and the real samples
         np.random.shuffle(generated_samples_bootstrap)
         np.random.shuffle(real_samples_bootstrap)
@@ -610,10 +613,22 @@ def correlation_matrix(dataset, generator_model, noises, scaler, T_gen, n_featur
     # Now compute the standard deviations for each set of elements
     standard_deviations_gen = np.std(stacked_elements_gen, axis=0)
     standard_deviations_real = np.std(stacked_elements_real, axis=0)
+    # Create a matrix n_features_gen x n_features_gen that has 0 non the diagonal and the standard deviations on the upper triangle
+    std_matrix_gen = np.zeros((n_features_gen, n_features_gen))
+    tri_indices = np.triu_indices(n_features_gen, k=1)
+    n_elements = int(n_features_gen*(n_features_gen-1)/2)
+    std_matrix_gen[tri_indices[0][:n_elements], tri_indices[1][:n_elements]] = standard_deviations_gen
+    std_matrix_gen = std_matrix_gen + std_matrix_gen.T
+    std_matrix_real = np.zeros((n_features_gen, n_features_gen))
+    std_matrix_real[tri_indices[0][:n_elements], tri_indices[1][:n_elements]] = standard_deviations_real
+    std_matrix_real = std_matrix_real + std_matrix_real.T
+    
+    logging.info(f'standard_deviation_gen shape: {standard_deviations_gen.shape}')
+    logging.info(f'correlation_matrix_gen shape: {correlation_matrix_gen.shape}')
 
     correlation_matrix_gen = np.corrcoef(generated_samples, rowvar=False)
     correlation_matrix_real = np.corrcoef(real_samples, rowvar=False)
-    features = np.array([[f'ask_volume_{i} (normal)',f'bid_volume_{i} (anomaly)'] for i in range(1, int(0.5*generated_samples.shape[1])+1)]).flatten()
+    features = np.array([[f'ask_volume_{i}',f'bid_volume_{i}'] for i in range(1, int(0.5*generated_samples.shape[1])+1)]).flatten()
     fig, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
     axes[0].imshow(correlation_matrix_gen, cmap='coolwarm', vmin=-1, vmax=1)
     axes[0].set_title('Correlation Matrix (generated samples)')
@@ -622,12 +637,14 @@ def correlation_matrix(dataset, generator_model, noises, scaler, T_gen, n_featur
     axes[0].set_xticklabels(features, rotation=90)
     axes[0].set_yticklabels(features)
     # Display the correlation values on the heatmap
+    k = 0
     for i in range(correlation_matrix_gen.shape[0]):
         for j in range(correlation_matrix_gen.shape[1]):
-            text_str = f"{round(correlation_matrix_gen[i, j], 2)} ± {round(2*standard_deviations_gen[i, j], 2)}"
+            text_str = f"{round(correlation_matrix_gen[i, j], 2)} ± {round(2*std_matrix_gen[i, j], 2)}"
             axes[0].text(j, i, text_str,
-                    ha='center', va='center',
-                    color='black')
+                ha='center', va='center',
+                color='black', fontsize=8)
+            k += 1
     axes[1].imshow(correlation_matrix_real, cmap='coolwarm', vmin=-1, vmax=1)
     axes[1].set_title('Correlation Matrix (real samples)')
     axes[1].set_xticks(range(generated_samples.shape[1]))
@@ -636,13 +653,14 @@ def correlation_matrix(dataset, generator_model, noises, scaler, T_gen, n_featur
     axes[1].set_yticklabels(features)
     for i in range(correlation_matrix_real.shape[0]):
         for j in range(correlation_matrix_real.shape[1]):
-            text_str = f"{round(correlation_matrix_real[i, j], 2)} ± {round(2*standard_deviations_real[i, j], 2)}"
-            axes[0].text(j, i, text_str,
+            text_str = f"{round(correlation_matrix_real[i, j], 2)} ± {round(2*std_matrix_real[i, j], 2)}"
+            axes[1].text(j, i, text_str,
                     ha='center', va='center',
-                    color='black')
+                    color='black', fontsize=8)
     path = [s for s in os.listdir('plots/') if job_id in s][0]
-    plt.savefig(f'{path}/6_correlation_matrix_final.png')
+    plt.savefig(f'plots/{path}/6_correlation_matrix_final.png')
     plt.close()
+    return None
 
 def create_animated_gif(job_id):
     '''This function takes as input the job id and creates an animated gif from the images
