@@ -121,6 +121,18 @@ if __name__ == '__main__':
     orderbook_df['spread'] = spread
     orderbook_df = orderbook_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
 
+    # # Create a bar plot displaying the volumes for a random index. The space between the last bid and the first ask must be equal to the spread for that index.
+    # plot_volumes(orderbook_df, total_depth, stock, date)
+    for _ in range(10):
+        idx = np.random.randint(0, orderbook_df.shape[0]-50)
+        plt.figure()
+        plt.plot(orderbook_df['spread'].values[idx:idx+50], 'k')
+        plt.title('Spread')
+        plt.xlabel('timestamps')
+        plt.savefig(f'plots/0_spread_{idx}.png')
+        plt.close()
+    exit()
+
     # Define the parameters of the GAN. Some of them are set via argparse
     T_condition = args.T_condition
     T_gen = args.T_gen
@@ -136,13 +148,14 @@ if __name__ == '__main__':
     best_disc_weights = None
     best_wass_dist = float('inf')
     patience_counter = 0
-    patience = 250
+    patience = 1000
 
     num_pieces = 5
     if not os.path.exists(f'../data/input_train_{stock}_{window_size}_{N}days_orderbook_.npy'):
         logging.info('\n[Input] ---------- PREPROCESSING ----------')
 
         data_input = orderbook_df.values
+        # data_input = np.load(f'anomaly_data_{N}.npy')
 
         # Divide input data into overlapping pieces
         sub_data, length = divide_into_overlapping_pieces(data_input, window_size, num_pieces)
@@ -168,43 +181,43 @@ if __name__ == '__main__':
             del windows  # Explicit deletion
         logging.info('Done.')
 
-        logging.info('\nSplit the condition data into train and validation sets...')
-        train, val = train_test_split(fp, train_size=0.80)
-        logging.info('Done.')
+        # logging.info('\nSplit the condition data into train and validation sets...')
+        # train, val = train_test_split(fp, train_size=0.80)
+        # logging.info('Done.')
 
         logging.info('\nDividing each window into condition and input...')
-        condition_train, input_train = train[:, :T_condition, :], train[:, T_condition:, :n_features_gen]
-        condition_val, input_val = val[:, :T_condition, :], val[:, T_condition:, :n_features_gen]
+        condition_train, input_train = fp[:, :T_condition, :], fp[:, T_condition:, :n_features_gen]
+        # condition_val, input_val = val[:, :T_condition, :], val[:, T_condition:, :n_features_gen]
         logging.info('Done.')
 
         logging.info(f'input_train shape:\n\t{input_train.shape}')
         logging.info(f'condition_train shape:\n\t{condition_train.shape}')
-        logging.info(f'input_val shape:\n\t{input_val.shape}')
-        logging.info(f'condition_val shape:\n\t{condition_val.shape}')
+        # logging.info(f'input_val shape:\n\t{input_val.shape}')
+        # logging.info(f'condition_val shape:\n\t{condition_val.shape}')
 
         logging.info('\nSave the files...')
         np.save(f'../data/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', condition_train)
-        np.save(f'../data/condition_val_{stock}_{window_size}_{N}days_orderbook.npy', condition_val)
+        # np.save(f'../data/condition_val_{stock}_{window_size}_{N}days_orderbook.npy', condition_val)
         np.save(f'../data/input_train_{stock}_{window_size}_{N}days_orderbook.npy', input_train)
-        np.save(f'../data/input_val_{stock}_{window_size}_{N}days_orderbook.npy', input_val)
+        # np.save(f'../data/input_val_{stock}_{window_size}_{N}days_orderbook.npy', input_val)
         logging.info('Done.')
 
         logging.info('\n[Input] ---------- DONE ----------')
     else:
         logging.info('Loading input_train, input_validation and input_test sets...')
         input_train = np.load(f'../data/input_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
-        input_val = np.load(f'../data/input_val_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
+        # input_val = np.load(f'../data/input_val_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
         condition_train = np.load(f'../data/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
-        condition_val = np.load(f'../data/condition_val_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
+        # condition_val = np.load(f'../data/condition_val_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
         
         logging.info(f'input_train shape:\n\t{input_train.shape}')
         logging.info(f'condition_train shape:\n\t{condition_train.shape}')
-        logging.info(f'input_val shape:\n\t{input_val.shape}')
-        logging.info(f'condition_val shape:\n\t{condition_val.shape}')
+        # logging.info(f'input_val shape:\n\t{input_val.shape}')
+        # logging.info(f'condition_val shape:\n\t{condition_val.shape}')
         
-        logging.info('Loading the scaler...')
-        scaler = load(f'scaler_{N}days_orderbook.joblib')
-        logging.info('Done.')
+        # logging.info('Loading the scaler...')
+        # scaler = load(f'scaler_{N}days_orderbook.joblib')
+        # logging.info('Done.')
 
     logging.info(f"\nHYPERPARAMETERS:\n"
                     f"\tstock: {stock}\n"
@@ -237,9 +250,9 @@ if __name__ == '__main__':
     # feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
 
     # Load the models from models/194198.pbs01_dense_dense_3_3_50_original
-    prev_job_id = 194198
-    generator_model = tf.keras.models.load_model(f'models/{prev_job_id}.pbs01_dense_dense_3_3_50_original/generator_model_385.h5')
-    discriminator_model = tf.keras.models.load_model(f'models/{prev_job_id}.pbs01_dense_dense_3_3_50_original/discriminator_model_385.h5')
+    prev_job_id = 194915
+    generator_model = tf.keras.models.load_model(f'models/{prev_job_id}.pbs01_dense_dense_3_3_50_original/generator_model_903.h5')
+    discriminator_model = tf.keras.models.load_model(f'models/{prev_job_id}.pbs01_dense_dense_3_3_50_original/discriminator_model_903.h5')
     feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
 
     logging.info('\n[Model] ---------- MODEL SUMMARIES ----------')
@@ -262,24 +275,38 @@ if __name__ == '__main__':
     # Train the GAN.
     logging.info('\n[Training] ---------- START TRAINING ----------')
     dataset_train = tf.data.Dataset.from_tensor_slices((condition_train, input_train)).batch(batch_size)
-    dataset_val = tf.data.Dataset.from_tensor_slices((condition_val, input_val)).batch(batch_size)
+    # dataset_val = tf.data.Dataset.from_tensor_slices((condition_val, input_val)).batch(batch_size)
 
     num_batches = len(dataset_train)
     logging.info(f'Number of batches:\n\t{num_batches}\n')
 
     # Initialize a list to store the mean over all the features of the wasserstein distances at each epoch
     wass_to_plot = []
+    noises = [[] for _ in range(n_epochs)] # noises will have n_epochs elements. Each elements is a list containing the noises used for each batch in that epoch
     for epoch in range(n_epochs):
         j = 0
-        noises = []
+        W_batch = [] # W_batch will have num_batches elements
+        # wass_dist = np.zeros((num_batches, n_features_gen, batch_size))
         for batch_condition, batch_real_samples in dataset_train:
             j += 1
             batch_size = batch_real_samples.shape[0]
-            generator_model, discriminator_model, noise = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, feature_extractor, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args)
+            generator_model, discriminator_model, generated_samples, noise = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, feature_extractor, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args)
             # Append the noise
-            noises.append(noise)
-        # Save the models via checkpoint
-        checkpoint_manager.save()
+            noises[epoch].append(noise)
+            # For each batch of the validation set I compute the wasserstein distance between the real samples
+            # and the generated ones. Then I take the mean over all the batches and all the features.
+            # generated_samples = generator_model([noise, batch_condition], training=True)
+            W_features = [] # W_features will have n_features_gen elements
+            for feature in range(n_features_gen): # Iteration over the features
+                W_samples = [] # W_samples will have batch_size elements
+                for i in range(generated_samples.shape[0]): # Iteration over the samples
+                    w = wasserstein_distance(batch_real_samples[i, :, feature], generated_samples[i, :, feature])
+                    W_samples.append(w)
+                W_features.append(np.mean(np.array(W_samples))) # averaged over the samples in a batch
+            W_batch.append(np.mean(np.array(W_features))) # averaged over the features
+        overall_W_mean = np.mean(np.array(W_batch)) # averaged over the batches
+        wass_to_plot.append(overall_W_mean)
+        logging.info(f'Wasserstein distance: {overall_W_mean}')
 
         if epoch % 10 == 0:
             logging.info('Creating a time series with the generated samples...')
@@ -287,68 +314,53 @@ if __name__ == '__main__':
             plot_samples(dataset_train, generator_model, noises, features, T_gen, n_features_gen, job_id, epoch, None, args)
             logging.info('Done')
 
-        if epoch > 1:
-            logging.info('Check Early Stopping Criteria on Validation Set')
-            # Here for each batch of the validation set I compute the wasserstein distance between the real samples
-            # and the generated ones. Then I take the mean over all the batches and all the features.
-            wass_dist = [[] for _ in range(n_features_gen)]
-            for val_batch_condition, val_batch in dataset_val: # Iteration over the batches
-                batch_size = val_batch.shape[0]
-                noise = tf.random.normal([batch_size, T_gen*latent_dim, n_features_gen])
-                generated_samples = generator_model([noise, val_batch_condition], training=True)
-                for feature in range(n_features_gen): # Iteration over the features
-                    for i in range(generated_samples.shape[0]): # Iteration over the samples
-                        w = wasserstein_distance(val_batch[i, :, feature], generated_samples[i, :, feature])
-                        wass_dist[feature].append(w)
-            wass_dist = np.mean(np.array(wass_dist).flatten())
-            wass_to_plot.append(wass_dist)
-
-            logging.info(f'Wasserstein distance: {wass_dist}')
-            # Check early stopping criteria
-            if wass_dist + 5e-3 < best_wass_dist:
-                logging.info(f'Wasserstein distance improved from {best_wass_dist} to {wass_dist}')
-                best_wass_dist = wass_dist
-                best_gen_weights = generator_model.get_weights()
-                best_disc_weights = discriminator_model.get_weights()
-                patience_counter = 0
-            else:
-                logging.info(f'Wasserstein distance did not improve from {best_wass_dist}')
-                patience_counter += 1
-            
-            if patience_counter >= patience:
-                best_epoch = epoch - patience
-                logging.info(f"Early stopping on epoch {epoch}. Restoring best weights of epoch {best_epoch}...")
-                generator_model.set_weights(best_gen_weights)  # restore best weights
-                discriminator_model.set_weights(best_disc_weights)
-                # Save the models
-                logging.info('Saving the models...')
-                generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model_{epoch-patience}.h5')
-                discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model_{epoch-patience}.h5')
-                # Save the 'best' noise
-                np.save(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/noises.npy', noises)
-                logging.info('Done')
-                break
-            else:
-                logging.info(f'Early stopping criterion not met. Patience counter:\n\t{patience_counter}')
-            
-            # Plot the wasserstein distance
-            plt.figure(figsize=(10, 6))
-            plt.plot(wass_to_plot)
-            plt.xlabel('Epoch')
-            plt.ylabel('Wasserstein distance')
-            plt.title(f'Mean over the features of the Wasserstein distances (Validation set)')
-            plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/0_wasserstein_distance.png')
-            plt.close()
-    noises = np.array(noises, dtype=object)
-    logging.info(f'noises shape:\n\t{noises.shape}')
-    logging.info(f'noises[0] shape:\n\t{noises[0].shape}')
-    np.save(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/noises.npy', noises)
+        logging.info('Check Early Stopping Criteria...')
+        if overall_W_mean + 5e-4 < best_wass_dist:
+            logging.info(f'Wasserstein distance improved from {best_wass_dist} to {overall_W_mean}')
+            best_wass_dist = overall_W_mean
+            best_gen_weights = generator_model.get_weights()
+            best_disc_weights = discriminator_model.get_weights()
+            patience_counter = 0
+        else:
+            logging.info(f'Wasserstein distance did not improve from {best_wass_dist}')
+            patience_counter += 1
+        
+        if patience_counter >= patience:
+            best_epoch = epoch - patience
+            logging.info(f"Early stopping on epoch {epoch}. Restoring best weights of epoch {best_epoch}...")
+            generator_model.set_weights(best_gen_weights)  # restore best weights
+            discriminator_model.set_weights(best_disc_weights)
+            # Save the models
+            logging.info('Saving the models...')
+            generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model_{best_epoch}.h5')
+            discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model_{best_epoch}.h5')
+            # Save the 'best' noise
+            np.save(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/noises.npy', noises[best_epoch])
+            logging.info('Done')
+        else:
+            logging.info(f'Early stopping criterion not met. Patience counter:\n\t{patience_counter}')
+        
+        # Plot the wasserstein distance
+        plt.figure(figsize=(10, 6))
+        plt.plot(wass_to_plot)
+        plt.xlabel('Epoch')
+        plt.ylabel('Wasserstein distance')
+        plt.title(f'Mean over the features of the Wasserstein distances')
+        # add a vertical line at the best epoch
+        plt.axvline(x=epoch-patience_counter, color='r', linestyle='--', alpha=0.8, label=f'Best epoch: {epoch-patience_counter}')
+        plt.legend()
+        plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/0_wasserstein_distance.png')
+        plt.close()
+        # Save the models via checkpoint
+        checkpoint_manager.save()
+        if patience_counter >= patience:
+            break
     logging.info('[Training] ---------- DONE ----------\n')
 
     logging.info('Computing the errors on the correlation matrix using bootstrap...')
     # At the end of the training, compute the errors on the correlation matrix using bootstrap.
     # In order to do so, I need the best generator and the noises used.
-    correlation_matrix(dataset_train, generator_model, noises, best_epoch, None, T_gen, n_features_gen, job_id, bootstrap_iterations=1000)
+    correlation_matrix(dataset_train, generator_model, noises, best_epoch, None, T_gen, n_features_gen, job_id)
     logging.info('Done.')
     # Maybe it is not necessary, but I prefer to clear all the memory and exit the script
     gc.collect()

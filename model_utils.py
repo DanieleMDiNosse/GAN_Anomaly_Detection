@@ -13,7 +13,6 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 from tensorflow.keras import layers
 from tensorflow.keras.models import Model
-from tcn import TCN
 from scipy.stats import wasserstein_distance
 
 def conv_block(xi, filters, kernel_size, strides, padding, skip_connections):
@@ -42,19 +41,6 @@ def dense_block(xi, units, skip_connections):
     if skip_connections == True:
         x = layers.Concatenate()([xi, xo])
     return x
-
-def tcn_block(xi, units, skip_connections):
-    x = TCN(nb_filters=units, use_skip_connection=False, return_sequences=True)(xi)
-    xo = layers.Dropout(0.2)(x)
-    if skip_connections == True:
-        x = layers.Concatenate()([xi, xo])
-    return x
-
-@tf.custom_gradient
-def round_ste(x):
-    def grad(dy):
-        return dy
-    return tf.round(x), grad
 
 def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, num_features_input, num_features_gen, activate_condition=False, loss='original'):
     '''Build the discriminator model'''
@@ -85,17 +71,9 @@ def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, nu
         for i in range(n_layers):
             x = dense_block(x, units=n_nodes[i], skip_connections=skip_connections)
             x = layers.Dropout(0.2)(x)
-    
-    if type == 'tcn':
-        x = layers.Reshape((T_gen, num_features_input, 1))(input)
-        for i in range(n_layers):
-            x = tcn_block(x, units=n_nodes[i], skip_connections=skip_connections)
 
     xi = layers.Flatten()(x)
     x = layers.Dense(32)(xi)
-
-    # if skip_connections == True:
-    #     x = layers.Concatenate()([xi, x])
 
     if activate_condition == True:
         x = layers.Concatenate()([x, x_c])
@@ -141,11 +119,6 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
         for i in range(n_layers):
             x = dense_block(x, units=n_nodes[i], skip_connections=skip_connections)
             x = layers.Dropout(0.2)(x)
-
-    if type == 'tcn':
-        x = layers.Reshape((T_gen, num_features_input, 1))(input)
-        for i in range(n_layers):
-            x = tcn_block(x, units=n_nodes[i], skip_connections=skip_connections)
 
     xi = layers.Flatten()(x)
 
@@ -235,7 +208,7 @@ def train_step(real_samples, condition, generator_model, discriminator_model, fe
     if j % 1 == 0:
         summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, generated_samples, real_samples, metrics, j, num_batches, job_id, epoch, args)
 
-    return generator_model, discriminator_model, noise
+    return generator_model, discriminator_model, generated_samples, noise
 
 def build_feature_extractor(discriminator, layer_indices):
     outputs = [discriminator.layers[i].output for i in layer_indices]

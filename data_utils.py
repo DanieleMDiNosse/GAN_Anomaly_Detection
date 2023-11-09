@@ -15,6 +15,7 @@ from PIL import Image, ImageSequence
 from statsmodels.tsa.ar_model import AutoReg
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from scipy.stats import normaltest, ttest_ind
+from statsmodels.tsa.stattools import adfuller
 import math
 from scipy.optimize import minimize
 
@@ -420,7 +421,7 @@ def plot_samples(dataset, generator_model, noises, features, T_gen, n_features_g
 
     k = 0
     for batch_condition, batch in dataset:
-        gen_sample = generator_model([noises[k], batch_condition])
+        gen_sample = generator_model([noises[epoch][k], batch_condition])
         if scaler == None:
             gen_sample = transform_and_reshape(gen_sample, T_gen, n_features_gen)
             batch = transform_and_reshape(batch, T_gen, n_features_gen)
@@ -532,7 +533,7 @@ def plot_samples(dataset, generator_model, noises, features, T_gen, n_features_g
     
     return None
 
-def correlation_matrix(dataset, generator_model, noises, best_epoch, scaler, T_gen, n_features_gen, job_id, bootstrap_iterations=1000):
+def correlation_matrix(dataset, generator_model, noises, best_epoch, scaler, T_gen, n_features_gen, job_id, bootstrap_iterations=10000):
     '''This function computes the correlation matrix of the generated samples and the real samples, together with the standard errors
     evaluated using the bootstrap method. The correlation matrix is saved in the plots folder corresponding to job_id.
 
@@ -555,7 +556,7 @@ def correlation_matrix(dataset, generator_model, noises, best_epoch, scaler, T_g
     job_id : string
         Job id.
     bootstrap_iterations : int, optional
-        Number of bootstrap iterations. The default is 1000.
+        Number of bootstrap iterations. The default is 10000.
     
     Returns
     -------
@@ -564,7 +565,7 @@ def correlation_matrix(dataset, generator_model, noises, best_epoch, scaler, T_g
     real_samples = []
     k = 0
     for batch_condition, batch in dataset:
-        gen_sample = generator_model([noises[k], batch_condition])
+        gen_sample = generator_model([noises[best_epoch][k], batch_condition])
         if scaler == None:
             gen_sample = transform_and_reshape(gen_sample, T_gen, n_features_gen)
             batch = transform_and_reshape(batch, T_gen, n_features_gen)
@@ -588,7 +589,6 @@ def correlation_matrix(dataset, generator_model, noises, best_epoch, scaler, T_g
     correlations_gen = np.zeros(shape=(bootstrap_iterations, generated_samples.shape[1], generated_samples.shape[1]))
     correlations_real = np.zeros(shape=(bootstrap_iterations, generated_samples.shape[1], generated_samples.shape[1]))
     for i in range(bootstrap_iterations):
-        logging.info(f'Bootstrap iteration {i+1}/{bootstrap_iterations}')
         # Shuffle randomly the generated samples and the real samples
         np.random.shuffle(generated_samples_bootstrap)
         np.random.shuffle(real_samples_bootstrap)
@@ -622,9 +622,9 @@ def correlation_matrix(dataset, generator_model, noises, best_epoch, scaler, T_g
     std_matrix_real = np.zeros((n_features_gen, n_features_gen))
     std_matrix_real[tri_indices[0][:n_elements], tri_indices[1][:n_elements]] = standard_deviations_real
     std_matrix_real = std_matrix_real + std_matrix_real.T
-    
-    logging.info(f'standard_deviation_gen shape: {standard_deviations_gen.shape}')
-    logging.info(f'correlation_matrix_gen shape: {correlation_matrix_gen.shape}')
+
+    logging.info(f'Std matrix of the generated samples:\n{std_matrix_gen}')
+    logging.info(f'Std matrix of the real samples:\n{std_matrix_real}')
 
     correlation_matrix_gen = np.corrcoef(generated_samples, rowvar=False)
     correlation_matrix_real = np.corrcoef(real_samples, rowvar=False)
@@ -643,7 +643,7 @@ def correlation_matrix(dataset, generator_model, noises, best_epoch, scaler, T_g
             text_str = f"{round(correlation_matrix_gen[i, j], 2)} ± {round(2*std_matrix_gen[i, j], 2)}"
             axes[0].text(j, i, text_str,
                 ha='center', va='center',
-                color='black', fontsize=8)
+                color='black', fontsize=6)
             k += 1
     axes[1].imshow(correlation_matrix_real, cmap='coolwarm', vmin=-1, vmax=1)
     axes[1].set_title('Correlation Matrix (real samples)')
@@ -656,7 +656,7 @@ def correlation_matrix(dataset, generator_model, noises, best_epoch, scaler, T_g
             text_str = f"{round(correlation_matrix_real[i, j], 2)} ± {round(2*std_matrix_real[i, j], 2)}"
             axes[1].text(j, i, text_str,
                     ha='center', va='center',
-                    color='black', fontsize=8)
+                    color='black', fontsize=6)
     path = [s for s in os.listdir('plots/') if job_id in s][0]
     plt.savefig(f'plots/{path}/6_correlation_matrix_final.png')
     plt.close()
@@ -740,6 +740,50 @@ def sin_wave(amplitude, omega, phi, change_amplitude=False):
     # sine_wave = np.reshape(sine_wave, (sine_wave.shape[0], 1))
     return sine_wave
 
+def plot_volumes(orderbook_df, depth, stock, date):
+    '''This function create a bar plot displaying the volumes for a random index (random LOB snapshot). 
+    The space between the last bid and the first ask must be equal to the spread for that index'''
+    depth = depth*2 + 1
+    for _ in range(10):
+        idx = np.random.randint(0, orderbook_df.shape[0])
+        ask_volumes = orderbook_df.iloc[idx, 0:depth:2].values
+        bid_volumes = orderbook_df.iloc[idx, 1:depth:2].values
+        spread = orderbook_df.iloc[idx, -1]
+        s = 0.5
+
+        # Creating positions for bid_volumes and ask_volumes bars on the x-axis
+        bid_volumes_positions = np.arange(len(bid_volumes))
+        ask_volumes_positions = np.arange(len(ask_volumes)) + len(bid_volumes) + spread  # Offset by the length of bid_volumes and the spacing spread
+
+        bid_volumes_labels = np.arange(-len(bid_volumes), 0)  # Labels for bid_volumes from -len(bid_volumes) to -1
+        ask_volumes_labels = np.arange(1, len(ask_volumes) + 1)  # Labels for ask_volumes from 1 to len(ask_volumes)
+
+        # New positions for ask_volumes bars to align with the new labels
+        ask_volumes_positions = bid_volumes_labels[-1] + s + 1 + np.arange(len(ask_volumes))
+
+        # Combined labels and positions for the bars
+        all_positions = np.concatenate((bid_volumes_labels, ask_volumes_positions))
+        all_labels = np.concatenate((bid_volumes_labels, ask_volumes_labels))
+        all_values = np.concatenate((bid_volumes, ask_volumes))
+
+        # Plotting with the new labels and positions
+        plt.figure()
+        plt.bar(all_positions, all_values, color=['blue' if val < 0 else 'orange' for val in all_values])
+        plt.xticks(all_positions, all_labels)  # Set custom ticks
+        plt.title('LOB snapshot')
+        plt.xlabel('Levels')
+        plt.ylabel('Volumes')
+
+        # Create dummy bars for the legend
+        blue_bar = plt.bar([0], [0], color='blue', label='Bid')
+        orange_bar = plt.bar([0], [0], color='orange', label='Ask')
+
+        # Add legend
+        plt.legend()
+
+        plt.savefig(f'plots/{stock}_{date}_LOB_snapshot_{idx}.png')
+        plt.close()
+
 def step_fun(freq):
     # Parameters
     num_periods = 1000  # Total number of periods to generate
@@ -797,12 +841,12 @@ def ar1_fit(data):
         logging.info(f"\tThe null hypothesis cannot be rejected")
     return None
 
-def anomaly_injection_orderbook(fp, means, stds, T_condition, depth, std_ampl, anomaly_type):
+def anomaly_injection_orderbook(fp, T_condition, depth, ampl, anomaly_type):
     '''This function takes as input a orderbook dataframe and injects anomalies in it. There are
     two types of anomalies: the first one is the random submissions of enormous orders (buy or sell)
     at a random level, while the second one consists in filling one side of the LOB with a lot of orders.
     The anomalies are injected in the 0.5% of the windows. An anomaly is set as the mean of the level
-    plus/minus the standard deviation of the level multiplied by a constant std_ampl.
+    plus/minus the standard deviation of the level multiplied by a constant ampl.
     
     Parameters
     ----------
@@ -816,7 +860,7 @@ def anomaly_injection_orderbook(fp, means, stds, T_condition, depth, std_ampl, a
         Number of time steps of the condition.
     depth : int
         Number of levels of the LOB.
-    std_ampl : float
+    ampl : float
         Constant used to amplify the standard deviation.
     anomaly_type : string
         Type of anomaly to inject. It can be 'big_order' or 'fill_side'.
@@ -834,32 +878,92 @@ def anomaly_injection_orderbook(fp, means, stds, T_condition, depth, std_ampl, a
     chosen_windows = []
     for _ in range(n_anomalies):
         chosen_window = np.random.randint(0, data.shape[0])
-        chosen_timestamp = np.random.randint(T_condition, data.shape[1])
         chosen_windows.append(chosen_window)
 
         if anomaly_type == 'big_order':
+            chosen_timestamp = np.random.randint(T_condition, data.shape[1], 1)
             chosen_feature = np.random.randint(0, (2*depth))
+            # evaluate the interquartile range of the chosen feature
+            third_quantile = np.quantile(data[chosen_window, chosen_timestamp, chosen_feature], 0.75)
+            first_quantile = np.quantile(data[chosen_window, chosen_timestamp, chosen_feature], 0.25)
+            iqr = third_quantile - first_quantile
             logging.info(f'Chosen feature: {chosen_feature}')
             if chosen_feature % 2 == 0:
-                anomaly = means[chosen_feature] + stds[chosen_feature]*std_ampl
+                # anomaly = means[chosen_feature] + stds[chosen_feature]*ampl + 1e10
+                anomaly = third_quantile + iqr*ampl
             else:
-                anomaly = means[chosen_feature] - stds[chosen_feature]*std_ampl
+                # anomaly = means[chosen_feature] - stds[chosen_feature]*ampl - 1e10
+                anomaly = -(third_quantile + iqr*ampl)
             data[chosen_window, chosen_timestamp, chosen_feature] = anomaly
 
-        if anomaly_type == 'fill_side':
+        if anomaly_type == 'metaorder':
+            chosen_timestamp = np.random.randint(T_condition, data.shape[1], 10)
             random_number_1 = np.random.normal()
+            chosen_feature = 0
             if random_number_1 < 0:
-                bid_idxs = np.arange(1, fp.shape[2], 2)
-                data[chosen_window, chosen_timestamp, bid_idxs] = means[bid_idxs] - stds[bid_idxs]*std_ampl
+                # bid_idxs = np.arange(1, fp.shape[2], 2)
+                data[chosen_window, chosen_timestamp, chosen_feature] = data[chosen_window, chosen_timestamp, 0] - np.array([(-np.sqrt(15000)/10)/10 for _ in range(chosen_timestamp.shape[0])])
             else:
-                ask_idxs = np.arange(0, fp.shape[2], 2)
-                data[chosen_window, chosen_timestamp, ask_idxs] = means[ask_idxs] + stds[ask_idxs]*std_ampl
-    return data, chosen_windows
+                # ask_idxs = np.arange(0, fp.shape[2], 2)
+                data[chosen_window, chosen_timestamp, chosen_feature] = data[chosen_window, chosen_timestamp, 0] + np.array([(np.sqrt(15000)/10)/10 for _ in range(chosen_timestamp.shape[0])])
+    return data, chosen_windows, chosen_feature
 
 def compute_spread(orderbook):
     '''This function computes the spread of the orderbook dataframe.'''
     spread = orderbook['Ask price 1'] - orderbook['Bid price 1']
     return spread
+
+def create_orderbook_dataframe(N):
+    '''This function create the orderbook dataframe with the following features:
+    - volumes_ask_i: volume of the i-th ask level
+    - volumes_bid_i: volume of the i-th bid level
+    - spread: spread of the orderbook
+    
+    The values are preprocessed using the preprocessing_orderbook_df function. Then, they are normalized
+    through the transformation x -> sign(x)*sqrt(|x|)*0.1.
+    Parameters
+    ----------
+    N : int
+        Number of days to consider.
+    
+    Returns
+    -------
+    orderbook_df : pandas dataframe
+        Dataframe containing the orderbook data with the specified features.'''
+    # Load data
+    stock = 'MSFT'
+    date = '2018-04-01_2018-04-30_5'
+    total_depth = 5
+
+    # Read the dataframes
+    dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
+    orderbook_df_paths = [path for path in dataframes_paths if 'orderbook' in path]
+    orderbook_df_paths.sort()
+    orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][N:N+1]
+    message_df_paths = [path for path in dataframes_paths if 'message' in path]
+    message_df_paths.sort()
+    message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][N:N+1]
+
+    # Preprocess the data using preprocessing_orderbook_df
+    orderbook_dfs, discard_times_list = zip(*[(preprocessing_orderbook_df(df, msg, discard_time=1800)) for df, msg in zip(orderbook_dfs, message_dfs)])
+    # Merge all the dataframes into a single one
+    orderbook_df = pd.concat(orderbook_dfs, ignore_index=True)
+    # Compute the spread
+    spread = compute_spread(orderbook_df)
+    # Extract the prices and volumes
+    bid_prices, bid_volumes, ask_prices, ask_volumes = prices_and_volumes(orderbook_df)
+    # Compute the volumes considering also empty levels
+    volumes_ask, volumes_bid = volumes_per_level(ask_prices, bid_prices, ask_volumes, bid_volumes, total_depth)
+    # Create a dataframe with the volumes
+    orderbook_df = pd.DataFrame()
+    for i in range(total_depth):
+        orderbook_df[f'volumes_ask_{i+1}'] = volumes_ask[:, i]
+        orderbook_df[f'volumes_bid_{i+1}'] = volumes_bid[:, i]
+    # Add the spread
+    orderbook_df['spread'] = spread
+    # Normalize the data
+    orderbook_df = orderbook_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
+    return orderbook_df
 
 
 if __name__ == "__main__":
@@ -867,10 +971,6 @@ if __name__ == "__main__":
         description='''This script several functions used to pre and post process the data.''')
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
-    parser.add_argument('-r', '--rename', action='store_true', help='Rename the colums of the dafaframes')
-    parser.add_argument('stock', type=str, help='Which stock to use (TSLA, MSFT)')
-    parser.add_argument('-N', '--N_days', type=int, help='Number of the day to consider')
-    parser.add_argument('-bpsw', '--box_plot_sw', action='store_true', help='Box plots for the time intervals within each window size')
 
     args = parser.parse_args()
     levels = {'critical': logging.CRITICAL,
@@ -878,56 +978,61 @@ if __name__ == "__main__":
               'warning': logging.WARNING,
               'info': logging.INFO,
               'debug': logging.DEBUG}
-    logging.basicConfig(level=levels[args.log])
+    
+    if os.getenv("PBS_JOBID") != None:
+        job_id = os.getenv("PBS_JOBID")
+    else:
+        job_id = os.getpid()
+    
+    logging.basicConfig(filename=f'data_utils_{job_id}.log', format='%(message)s', level=levels[args.log])
+
+    logger = tf.get_logger()
+    logger.setLevel('ERROR')
+
+    np.random.seed(666)
+
+    # Print the current date and time
+    current_datetime = pd.Timestamp.now()
+    formatted_datetime = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
+    logging.info(f"Current Date and Time:\n\t {formatted_datetime}")
 
     # Load the data
-    stock = args.stock
-    if stock == 'TSLA':
-        date = '2015-01-01_2015-01-31_10'
-    elif stock == 'MSFT':
-        date = '2018-04-01_2018-04-30_5'
-
-    N = args.N_days
+    stock = 'MSFT'
+    date = '2018-04-01_2018-04-30_5'
     
-    # Read the message dataframes
-    dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
-    # dataframes_paths = [path for path in dataframes_paths if 'orderbook' in path]
-    dataframes_paths.sort()
-    dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths][:N]
-    step = 100
-    window_size = [step*i for i in range(1, 21)]
-
-    # Check if all the first columns names of the dataframes are equal to 'Time'.
-    # If not, rename them via the rename_columns function.
-    for path, data in zip(dataframes_paths, dataframes):
-        if 'message' in path:
-            if data.columns[0] != 'Time':
-                logging.info('Renaming the columns of the dataframes...')
-                rename_columns(stock, date)
-        elif 'orderbook' in path:
-            if data.columns[0] != 'Ask price 1':
-                logging.info('Renaming the columns of the dataframes...')
-                rename_columns(stock, date)
-
-
-    if args.box_plot_sw:
-        '''The window size of the sliding window is a hyperparameter that needs to be tuned. Here I plot the boxplots
-         of the time intervals for each window size length.'''
-        i = 0
-        for data in tqdm(dataframes, desc='BoxPlots of delta_t for each day'):
-            i += 1
-            if list(data.columns) == ['Time', 'Event type', 'Order ID', 'Size', 'Price', 'Direction']:
-                timedeltas = sliding_windows_stat(data)
-                # print(timedeltas)
-                plt.figure(figsize=(10, 5), tight_layout=True)
-                plt.boxplot(timedeltas)
-                plt.xticks(np.arange(1, len(window_size)+1), window_size, rotation=45)
-                plt.xlabel('Window size')
-                plt.ylabel('Time interval (minutes)')
-            plt.title(f'Time intervals for each window size - {stock}')
-            plt.savefig(f'plots/time_intervals_{stock}_{i}.png')
-        plt.show()
-        exit()
+    # Check if the orderflow is stationary or not
+    N = 10
+    p_values = np.zeros((N,6))
+    for n in range(N):
+        logging.info(f'Day {n}')
+        orderbook = create_orderbook_dataframe(N)
+        columns = orderbook.columns
+        for col in range(6):
+            res = adfuller(orderbook[columns[col]].values)
+            p_values[n, col] = res[1]
+            logging.info(f'p-value for {columns[col]}: {res[1]}')
+    
+    # Visualize p_values matrix using imshow with a colorbar
+    fig, ax = plt.subplots(figsize=(10, 10))
+    im = ax.imshow(p_values, cmap='viridis_r', vmin=0, vmax=1)
+    ax.set_title('ADF test p-values')
+    ax.set_xlabel('Features')
+    ax.set_ylabel('Days')
+    ax.set_xticks(np.arange(len(columns[:6])))
+    ax.set_yticks(np.arange(N))
+    ax.set_xticklabels(columns[:6])
+    ax.set_yticklabels(np.arange(N))
+    # Rotate the tick labels and set their alignment.
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right",
+            rotation_mode="anchor")
+    # Loop over data dimensions and create text annotations.
+    for i in range(N):
+        for j in range(6):
+            text = ax.text(j, i, f"{p_values[i, j]:.2e}",
+                        ha="center", va="center", color="black", fontsize=11)
+    fig.tight_layout()
+    plt.savefig(f'plots/ADF_test_p_values.png')
+    
 
     
 

@@ -8,6 +8,7 @@ from data_utils import *
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import argparse
 import logging
+import seaborn as sns
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -15,7 +16,7 @@ if __name__ == '__main__':
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
     parser.add_argument("-j", "--job_id", type=str, help=("Provide job id"))
-    parser.add_argument('-at', '--anomaly_type', type=str, help='Type of anomaly to inject (big_order, fill_side)')
+    parser.add_argument('-at', '--anomaly_type', type=str, help='Type of anomaly to inject (big_order, metaorder)')
     parser.add_argument('-N', '--N_days', help='Number of days used for testing', type=int, default=1)
     parser.add_argument('-d', '--depth', help='Number of levels to consider in the orderbook', type=int)
     parser.add_argument('-nlg', '--n_layers_gen', help='Number of generator layers', type=int)
@@ -24,7 +25,7 @@ if __name__ == '__main__':
     parser.add_argument('-td', '--type_disc', help='Type of discriminator model (conv, lstm, dense)', type=str)
     parser.add_argument('-tc', '--T_condition', help='Number of time steps to condition on', type=int)
     parser.add_argument('-ls', '--loss', help='Loss function (original, wasserstein)', type=str, default='original')
-    parser.add_argument('-std', '--std_ampl', help='Amplification factor for the standard deviation', type=float, default=1)
+    parser.add_argument('-a', '--ampl', help='Amplification factor for the standard deviation', type=float, default=1)
 
 
     levels = {'critical': logging.CRITICAL,
@@ -40,7 +41,7 @@ if __name__ == '__main__':
         job_id = os.getpid()
 
     # Initialize logger
-    logging.basicConfig(filename=f'output_{job_id}_anomalydet.log', format='%(message)s', level=levels[args.log])
+    logging.basicConfig(filename=f'anomaly_detection_{job_id}.log', format='%(message)s', level=levels[args.log])
 
     # Print the current date and time
     current_datetime = pd.Timestamp.now()
@@ -61,41 +62,11 @@ if __name__ == '__main__':
     logging.info('Discriminator summary:')
     discriminator.summary(print_fn=lambda x: logging.info(x))
 
-    # Load data
-    stock = 'MSFT'
-    date = '2018-04-01_2018-04-30_5'
-    total_depth = 5
     window_size = args.T_condition + 10
     depth = args.depth
 
-    # Read the dataframes
-    dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
-    orderbook_df_paths = [path for path in dataframes_paths if 'orderbook' in path]
-    orderbook_df_paths.sort()
-    orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][N:N+1]
-    message_df_paths = [path for path in dataframes_paths if 'message' in path]
-    message_df_paths.sort()
-    message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][N:N+1]
-
-    # Preprocess the data using preprocessing_orderbook_df
-    orderbook_dfs, discard_times_list = zip(*[(preprocessing_orderbook_df(df, msg, discard_time=1800)) for df, msg in zip(orderbook_dfs, message_dfs)])
-    # Merge all the dataframes into a single one
-    orderbook_df = pd.concat(orderbook_dfs, ignore_index=True)
-    # Compute the spread
-    spread = compute_spread(orderbook_df)
-    # Extract the prices and volumes
-    bid_prices, bid_volumes, ask_prices, ask_volumes = prices_and_volumes(orderbook_df)
-    # Compute the volumes considering also empty levels
-    volumes_ask, volumes_bid = volumes_per_level(ask_prices, bid_prices, ask_volumes, bid_volumes, total_depth)
-    # Create a dataframe with the volumes
-    orderbook_df = pd.DataFrame()
-    for i in range(total_depth):
-        orderbook_df[f'volumes_ask_{i+1}'] = volumes_ask[:, i]
-        orderbook_df[f'volumes_bid_{i+1}'] = volumes_bid[:, i]
-    # Add the spread
-    orderbook_df['spread'] = spread
-    # Normalize the data
-    orderbook_df = orderbook_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
+    # Create the orderbook dataframe
+    orderbook_df = create_orderbook_dataframe(N)
     # Compute the first two moments
     means, stds = orderbook_df.mean(), orderbook_df.std()
 
@@ -108,7 +79,6 @@ if __name__ == '__main__':
         raise ValueError(f'The last piece has shape {sub_data[-1].shape} and it is smaller than the window size {window_size}.')
 
     final_shape = (length-5*(window_size-1), window_size, orderbook_df.shape[1])
-    # fp = np.memmap("final_data.dat", dtype='float32', mode='w+', shape=final_shape)
     normal_data = np.empty(final_shape, dtype='float32')
 
     start_idx = 0
@@ -126,7 +96,9 @@ if __name__ == '__main__':
     condition_test, input_test = normal_data[:, :args.T_condition, :], normal_data[:, args.T_condition:, :(2*depth)]
 
     # Inject anomalies
-    anomaly_data, chosen_windows = anomaly_injection_orderbook(normal_data, means, stds, args.T_condition, depth, args.std_ampl, args.anomaly_type)
+    anomaly_data, chosen_windows, chosen_feature = anomaly_injection_orderbook(normal_data, args.T_condition, depth, args.ampl, args.anomaly_type)
+    # Save the anomaly data
+    np.save(f'anomaly_data_{N}.npy', anomaly_data)
     logging.info(f'\nanomaly_data shape:\n\t{anomaly_data.shape}')
     logging.info(f'normal_data shape:\n\t{normal_data.shape}')
     logging.info(f'\nchosen_windows:\n\t{chosen_windows}')
@@ -159,16 +131,68 @@ if __name__ == '__main__':
             axs[i, 1].plot(input_test_anomaly[chosen_windows[0], :, i], 'coral', label='Anomaly', alpha=0.75)
             axs[i, 1].set_title(titles[i])
             axs[i, 1].legend()
-    plt.savefig(f'output_{job_id}_normal_vs_anomaly_{args.anomaly_type}_{args.std_ampl}.png')
+    plt.savefig(f'anomaly_{job_id}_normal_vs_anomaly_{args.anomaly_type}_{args.ampl}.png')
 
 
     # Hyperparameters
     n_features = input_test.shape[2]
     T_gen = input_test.shape[1]
-    latent_dim = depth*10
+    latent_dim = depth*15
     batch_size = 1
 
+    # The idea here is to create a sort of 'distribution of scores' for the normal and the anomaly data
+    # to asses the ability of the discriminator to distinguish between the two. For each anomaly, I
+    # sample a certain number of condition windows and compute the discriminator scores (normal and anomaly) for each of them.
+    # Then, I create a violin plot of the distribution of the scores for the normal and the anomaly data.
     logging.info('Computing the scores...')
+    # idx_windows = np.random.choice(len(chosen_windows), 10, replace=False)
+    for idx in range(len(chosen_windows)):
+        input_real = input_test[chosen_windows[idx], :, :]
+        idx_windows = np.random.choice(condition_test.shape[0], 100, replace=False)
+        condition_test_sampled = condition_test[idx_windows]
+        disc_scores = []
+        for cond_test in condition_test_sampled:
+            disc_output = discriminator([input_real[None, ...], cond_test[None, ...]])
+            disc_scores.append(disc_output.numpy()[0])
+
+        input_anomaly = input_test_anomaly[chosen_windows[idx], :, :]
+        condition_anomaly_sampled = condition_test_anomaly[idx_windows]
+        disc_scores_anomaly = []
+        for cond_test_anomaly in condition_anomaly_sampled:
+            disc_output = discriminator([input_anomaly[None, ...], cond_test_anomaly[None, ...]])
+            disc_scores_anomaly.append(disc_output.numpy()[0])
+
+        # Combine the scores into one array and create a label array
+        combined_scores = np.concatenate([np.ravel(disc_scores), np.ravel(disc_scores_anomaly)])
+        labels = ['Normal'] * len(disc_scores) + ['Anomaly'] * len(disc_scores_anomaly)
+
+        # Create a figure
+        plt.figure(figsize=(10, 5))
+
+        # Plot the combined scores with hue
+        sns.violinplot(x=labels, y=combined_scores, split=True)
+
+        # Set the title of the plot
+        plt.ylabel('Discriminator Scores')
+
+        # Save the figure
+        plt.savefig(f'plots/discriminator_scores_combined_{idx}_{args.anomaly_type}.png')
+        plt.close()
+
+        # # Create a figure with two subplots
+        # fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+        # # Plot the normal scores in the first subplot
+        # sns.violinplot(np.array(disc_scores), orientation='v', ax=axs[0])
+        # axs[0].set_title('Normal Scores')
+        # # Plot the anomaly scores in the second subplot
+        # sns.violinplot(np.array(disc_scores_anomaly), orientation='v', ax=axs[1])
+        # axs[1].set_title('Anomaly Scores')
+        # # Set the title of the figure
+        # fig.suptitle('Discriminator Scores')
+        # # Save the figure
+        # plt.savefig(f'plots/discriminator_scores_{idx}.png')
+
+    
 
     # Create the datsasets 
     dataset_normal = tf.data.Dataset.from_tensor_slices((condition_test, input_test)).batch(batch_size)
@@ -179,23 +203,9 @@ if __name__ == '__main__':
     # iterate through the dataset_normal and dataset_anomaly
 
     for (condition_real, input_real), (condition_anomaly, input_anomaly) in zip(dataset_normal, dataset_anomaly):
-        # add one dummy dimension to window_condition due to contestts on the shape of the input for the generator
-        # window_condition = np.expand_dims(window_condition, axis=0)
-        # Find the latent space representation of the window
-        # res = explore_latent_space(input_real, condition_real, latent_dim, T_gen, generator)
-        # Use it to generate a sample
-        # gen_output = generator(res)
-        # gen_output = tf.reshape(gen_output, [T_gen, n_features]).numpy()
-        # Compute the difference wrt the original window
-        # diff = np.sum(np.abs(window_test - gen_output))
-        # Compute the score given by the discriminator
-        # Append the scores
-        # gen_anomaly_scores.append(diff)
         disc_output_normal = discriminator([input_real, condition_real])
-        logging.info(f'\nDiscriminator output normal:\n\t{disc_output_normal.numpy()[0]}')
         disc_normal_score.append(disc_output_normal.numpy()[0])
         disc_output_anomaly = discriminator([input_anomaly, condition_anomaly])
-        logging.info(f'\nDiscriminator output anomaly:\n\t{disc_output_anomaly.numpy()[0]}')
         disc_anomaly_score.append(disc_output_anomaly.numpy()[0])
     
     # gen_anomaly_scores = np.array(gen_anomaly_scores)
@@ -208,20 +218,18 @@ if __name__ == '__main__':
     v_idxs[chosen_windows] = disc_normal_score[chosen_windows]
     alpha = [1 if i != 0 else 0 for i in v_idxs]
 
-    plt.figure()
-    plt.plot(disc_normal_score, label='Discriminator score', alpha=0.7)
-    plt.scatter(np.arange(disc_normal_score.shape[0]), v_idxs, color='red', alpha=alpha)
+    _, axes = plt.subplots(2, 1, figsize=(10, 10), tight_layout=True)
+    axes[0].plot(disc_normal_score, label='Discriminator score', alpha=0.7)
+    axes[0].scatter(np.arange(disc_normal_score.shape[0]), v_idxs, color='red', alpha=alpha)
     # plt.ylim(disc_normal_score.min()-0.1, disc_anomaly_score.max()+0.1)
-    plt.title('Anomaly scores')
-    plt.savefig(f'output_{job_id}_anomaly_scores_normal_{args.anomaly_type}_{args.std_ampl}.png')
+    axes[0].set_title('Anomaly scores')
 
      # Plot the anomaly scores
     v_idxs = np.zeros_like(disc_anomaly_score)
     v_idxs[chosen_windows] = disc_anomaly_score[chosen_windows]
 
-    plt.figure()
-    plt.plot(disc_anomaly_score, label='Discriminator score', alpha=0.7)
-    plt.scatter(np.arange(disc_anomaly_score.shape[0]), v_idxs, color='red', label='Injected anomaly', alpha=alpha)
+    axes[1].plot(disc_anomaly_score, label='Discriminator score', alpha=0.7)
+    axes[1].scatter(np.arange(disc_anomaly_score.shape[0]), v_idxs, color='red', label='Injected anomaly', alpha=alpha)
     # plt.ylim(disc_anomaly_score.min()-0.1, disc_anomaly_score.max()+0.1)
-    plt.title('Anomaly scores (injected anomalies)')
-    plt.savefig(f'output_{job_id}_anomaly_scores_synthetic_{args.anomaly_type}_{args.std_ampl}.png')
+    axes[1].set_title('Anomaly scores (injected anomalies)')
+    plt.savefig(f'anomaly_{job_id}_anomaly_scores_{args.anomaly_type}_{args.ampl}.png')
