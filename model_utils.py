@@ -13,7 +13,6 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 from tensorflow.keras import layers
 from tensorflow.keras.models import Model
-from scipy.stats import wasserstein_distance
 
 def conv_block(xi, filters, kernel_size, strides, padding, skip_connections):
     x = layers.Conv2D(filters=filters, kernel_size=kernel_size, strides=strides, padding=padding)(xi)
@@ -127,7 +126,6 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
     x = layers.Dense(T_gen*num_features_gen)(xi)
     # x = layers.ReLU()(x)
 
-    # x = tf.keras.layers.Lambda(lambda z: round_ste(z))(x)
     output = layers.Reshape((T_gen, num_features_gen))(x)
 
     if activate_condition == True:
@@ -191,7 +189,6 @@ def train_step(real_samples, condition, generator_model, discriminator_model, fe
             generator_loss = compute_generator_loss(fake_output)
             fm_loss = compute_feature_matching_loss(real_features_list, generated_features_list)
             generator_loss = generator_loss +  fm_loss
-            # generator_loss = fm_loss
         elif loss == 'wasserstein':
             generator_loss = wasserstein_loss(fake_output)
 
@@ -203,10 +200,10 @@ def train_step(real_samples, condition, generator_model, discriminator_model, fe
     del disc_tape 
 
     # disc_accuracy = compute_accuracy(outputs)
-    if j % 10 == 0:
+    if j % 150 == 0:
         logging.info(f'Epoch: {epoch} | Batch: {j}/{num_batches} | Disc loss: {np.mean(discriminator_loss):.5f} | Gen loss: {np.mean(generator_loss):.5f} | <Disc_output_r>: {np.mean(real_output):.5f}| <Disc_output_f>: {np.mean(fake_output):.5f}')
-    if j % 1 == 0:
-        summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, generated_samples, real_samples, metrics, j, num_batches, job_id, epoch, args)
+    if j % 50 == 0:
+        summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, generated_samples, real_samples, metrics, job_id, args)
 
     return generator_model, discriminator_model, generated_samples, noise
 
@@ -259,7 +256,7 @@ def gradient_penalty(discriminator_model, batch_size, real_samples, fake_samples
     gp = tf.reduce_mean((norm - 1.0) ** 2)
     return float(gp)
 
-def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss, generated_samples, real_samples, metrics, i, num_batches, job_id, epoch, args):
+def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss, generated_samples, real_samples, metrics, job_id, args):
 
     generated_samples = generated_samples[0,:,:].numpy()
     real_samples = real_samples[0,:,:].numpy()
