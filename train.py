@@ -14,6 +14,7 @@ import logging
 from model_utils import *
 import math
 import gc
+from scipy.stats import wasserstein_distance
 import sys
 
 
@@ -98,7 +99,7 @@ if __name__ == '__main__':
     n_features_input = orderbook_df.shape[1]
     n_features_gen = 2*depth
     latent_dim = args.latent_dim
-    n_epochs = 3000
+    n_epochs = 5000
     batch_size = args.batch_size
 
     # Define the parameters for the early stopping criterion
@@ -157,8 +158,8 @@ if __name__ == '__main__':
         logging.info('\n[Input] ---------- DONE ----------')
     else:
         logging.info('Loading input_train, input_validation and input_test sets...')
-        input_train = np.load(f'../data/input_train_{stock}_{window_size}_day{N}_orderbook.npy', mmap_mode='r')
-        condition_train = np.load(f'../data/condition_train_{stock}_{window_size}_day{N}_orderbook.npy', mmap_mode='r')
+        input_train = np.load(f'../data/input_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
+        condition_train = np.load(f'../data/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
         
         logging.info(f'input_train shape:\n\t{input_train.shape}')
         logging.info(f'condition_train shape:\n\t{condition_train.shape}')
@@ -253,29 +254,30 @@ if __name__ == '__main__':
             logging.info('Done')
 
         logging.info('Check Early Stopping Criteria...')
-        if overall_W_mean + 5e-4 < best_wass_dist:
-            logging.info(f'Wasserstein distance improved from {best_wass_dist} to {overall_W_mean}')
-            best_wass_dist = overall_W_mean
-            best_gen_weights = generator_model.get_weights()
-            best_disc_weights = discriminator_model.get_weights()
-            patience_counter = 0
-            np.save(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/noise_{epoch}.npy', noises)
-        else:
-            logging.info(f'Wasserstein distance did not improve from {best_wass_dist}')
-            patience_counter += 1
-        
-        if patience_counter >= patience:
-            best_epoch = epoch - patience
-            logging.info(f"Early stopping on epoch {epoch}. Restoring best weights of epoch {best_epoch}...")
-            generator_model.set_weights(best_gen_weights)  # restore best weights
-            discriminator_model.set_weights(best_disc_weights)
+        if epoch > 2500:
+            if overall_W_mean + 5e-4 < best_wass_dist:
+                logging.info(f'Wasserstein distance improved from {best_wass_dist} to {overall_W_mean}')
+                best_wass_dist = overall_W_mean
+                best_gen_weights = generator_model.get_weights()
+                best_disc_weights = discriminator_model.get_weights()
+                patience_counter = 0
+                np.save(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/noise_{epoch}.npy', noises)
+            else:
+                logging.info(f'Wasserstein distance did not improve from {best_wass_dist}')
+                patience_counter += 1
+            
+            if patience_counter >= patience:
+                best_epoch = epoch - patience
+                logging.info(f"Early stopping on epoch {epoch}. Restoring best weights of epoch {best_epoch}...")
+                generator_model.set_weights(best_gen_weights)  # restore best weights
+                discriminator_model.set_weights(best_disc_weights)
 
-            logging.info('Saving the models...')
-            generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.h5')
-            discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.h5')
-            logging.info('Done')
-        else:
-            logging.info(f'Early stopping criterion not met. Patience counter:\n\t{patience_counter}')
+                logging.info('Saving the models...')
+                generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.h5')
+                discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.h5')
+                logging.info('Done')
+            else:
+                logging.info(f'Early stopping criterion not met. Patience counter:\n\t{patience_counter}')
         
         # Plot the wasserstein distance
         plt.figure(figsize=(10, 6))
@@ -305,11 +307,9 @@ if __name__ == '__main__':
         gen_sample = generator_model([noises[k], batch_condition])
         for i in range(gen_sample.shape[0]):
             # All the appended samples will be of shape (T_gen, n_features_gen)
-            generated_samples.append(gen_sample[i, :, :])
-            real_samples.append(batch[i, :, :])
+            generated_samples.append(gen_sample[i, -1, :])
+            real_samples.append(batch[i, -1, :])
         k += 1
-    generated_samples = np.array(generated_samples).reshape(generated_samples.shape[0]*generated_samples.shape[1], generated_samples.shape[2])
-    real_samples = np.array(real_samples).reshape(real_samples.shape[0]*real_samples.shape[1], real_samples.shape[2])
     plot_pca_with_marginals(generated_samples, real_samples, job_id, args)
     logging.info('Done.')
 

@@ -37,6 +37,7 @@ def dense_block(xi, units, skip_connections):
     # x = layers.LeakyReLU()(x)
     xo = layers.ReLU()(x)
     # xo = layers.BatchNormalization()(xo)
+    xo = layers.Dropout(0.2)(xo)
     if skip_connections == True:
         x = layers.Concatenate()([xi, xo])
     return x
@@ -104,7 +105,7 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
     input = layers.Input(shape=(T_gen*latent_dim, num_features_gen), name='input')
 
     if type == 'conv':
-        x = layers.Reshape((T_gen, latent_dim,  num_features_input))(input)
+        x = layers.Reshape((T_gen, latent_dim,  num_features_gen))(input)
         for i in range(n_layers):
             x = conv_block(x, filters=n_nodes[i], kernel_size=(3,num_features_input), strides=1, padding='same', skip_connections=skip_connections)
 
