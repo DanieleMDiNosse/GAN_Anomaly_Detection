@@ -12,7 +12,7 @@ PROVA SPERO CHE QUESTA COSA VENGA STAMPATA
    :maxdepth: 2
    :caption: Contents:
 
-   model_utils
+   source/model_utils
 
 Indices and tables
 ==================
