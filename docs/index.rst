@@ -4,6 +4,8 @@
    contain the root `toctree` directive.
 
 Welcome to LOBgen_cGAN's documentation!
+
+PROVA SPERO CHE QUESTA COSA VENGA STAMPATA
 =======================================
 
 .. toctree::
