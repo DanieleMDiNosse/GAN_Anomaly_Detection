@@ -5,7 +5,6 @@
 
 Welcome to LOBgen_cGAN's documentation!
 
-PROVA SPERO CHE QUESTA COSA VENGA STAMPATA
 =======================================
 
 .. toctree::
@@ -13,6 +12,9 @@ PROVA SPERO CHE QUESTA COSA VENGA STAMPATA
    :caption: Contents:
 
    source/model_utils
+   source/anomaly_detection
+   source/train
+   source/data_utils
 
 Indices and tables
 ==================
