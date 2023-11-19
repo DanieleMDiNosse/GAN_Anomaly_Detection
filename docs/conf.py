@@ -7,7 +7,7 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 import os
 import sys
-import sphinx_rtd_theme
+# import sphinx_rtd_theme
 sys.path.insert(0, os.path.abspath('../'))  # Adjust the path to the root of your Python project
 
 project = 'LOBgen_cGAN'
