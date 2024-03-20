@@ -1,4 +1,6 @@
 #!/bin/bash
-source danielemdn_env/bin/activate
+source ~/.bashrc
+conda activate dmdn
+cd /home/ddinosse/GAN_Anomaly_Detection
 
-python model.py TSLA -N=1
+python /home/ddinosse/GAN_Anomaly_Detection/data_utils.py

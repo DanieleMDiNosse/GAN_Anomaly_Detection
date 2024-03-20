@@ -209,6 +209,7 @@ def train_step(real_samples, condition, generator_model, discriminator_model, fe
     return generator_model, discriminator_model, generated_samples, noise
 
 def build_feature_extractor(discriminator, layer_indices):
+    '''Build a feature extractor model from the discriminator model. This model will be used to compute the feature matching loss.'''
     outputs = [discriminator.layers[i].output for i in layer_indices]
     return tf.keras.Model(discriminator.input, outputs)
 

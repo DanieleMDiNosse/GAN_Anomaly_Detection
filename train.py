@@ -1,4 +1,4 @@
-'''This script contains the functions used to contruct and train the GAN.'''
+'''This script contains the training of the GAN.'''
 
 import numpy as np
 import pandas as pd
@@ -49,7 +49,9 @@ if __name__ == '__main__':
     else:
         job_id = os.getpid()
 
-    logging.basicConfig(filename=f'train_{job_id}.log', format='%(message)s', level=levels[args.log])
+    if not os.path.exists('logs'):
+        os.mkdir('logs')
+    logging.basicConfig(filename=f'logs/train_{job_id}.log', format='%(message)s', level=levels[args.log])
 
     logger = tf.get_logger()
     logger.setLevel('ERROR')
@@ -65,16 +67,16 @@ if __name__ == '__main__':
     # Enable device placement logging
     tf.debugging.set_log_device_placement(True)
    
-    # Load the data
+    # Define data parameters
     stock = 'MSFT'
     date = '2018-04-01_2018-04-30_5'
-    total_depth = 5
     N = args.N_days
     depth = args.depth
 
     logging.info(f'Stock:\n\t{stock}')
     logging.info(f'Number of days:\n\t{N}')
 
+    # Check the available GPUs
     physical_devices = tf.config.experimental.list_physical_devices('GPU')
     if len(physical_devices) == 0:
         logging.info("No GPUs available.")
@@ -90,7 +92,8 @@ if __name__ == '__main__':
     os.mkdir(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Models
     
     # Create the orderbook dataframe
-    orderbook_df = create_orderbook_dataframe(N, previos_days=False)
+    orderbook_df, prices_change = create_LOB_snapshots(N, depth, previous_days=False)
+    exit()
 
     # Define the parameters of the GAN. Some of them are set via argparse
     T_condition = args.T_condition
@@ -114,9 +117,6 @@ if __name__ == '__main__':
         logging.info('\n[Input] ---------- PREPROCESSING ----------')
 
         data_input = orderbook_df.values
-        # data_input = np.load(f'anomaly_data_{N}.npy')
-        # logging.info(f'\nAre anomaly_data and normal_data the same?\n\t{np.all(data_input == data_input_a)}')
-        # exit()
         # Divide input data into overlapping pieces
         sub_data, length = divide_into_overlapping_pieces(data_input, window_size, num_pieces)
 
@@ -224,7 +224,7 @@ if __name__ == '__main__':
     for epoch in range(n_epochs):
         j = 0
         W_batch = [] # W_batch will have num_batches elements
-        noises = [[] for _ in range(num_batches)] # noises will have num_batches elements. Each elements is a list containing the noises used for each batch in that epoch
+        noises = [[] for _ in range(num_batches)] # noises will have num_batches elements. Each elements is a list containing the noises used for each batch in that epoch by the genereator
         for batch_condition, batch_real_samples in dataset_train:
             j += 1
             batch_size = batch_real_samples.shape[0]
@@ -319,6 +319,7 @@ if __name__ == '__main__':
     # In order to do so, I need the best generator and the noises used.
     correlation_matrix(dataset_train, generator_model, noises, T_gen, n_features_gen, job_id)
     logging.info('Done.')
+
     # Maybe it is not necessary, but I prefer to clear all the memory and exit the script
     gc.collect()
     tf.keras.backend.clear_session()

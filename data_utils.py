@@ -19,9 +19,10 @@ from sklearn.decomposition import PCA
 import seaborn as sns
 from statsmodels.graphics.tsaplots import plot_acf
 
-def rename_columns(dataframes_folder_path):
+def convert_and_renamecols(dataframes_folder_path):
     '''This function takes as input the path of the folder containing the dataframes and renames the columns
-    of the message and orderbook dataframes. Then, it saves the dataframes in the same folder.
+    of the message and orderbook dataframes. Then, it saves the dataframes in the same folder as a parquet
+    dataframe.
     
     Parameters
     ----------
@@ -35,25 +36,106 @@ def rename_columns(dataframes_folder_path):
     # Read the message dataframes
     dataframes_paths = os.listdir(f'{dataframes_folder_path}/')
     dataframes_paths.sort()
-    dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths]
-    for data, path in zip(dataframes, dataframes_paths):
+    # dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths]
+    for path in dataframes_paths:
+        if path.endswith('.csv'): 
+            logging.info(f'Found csv dataframe for {path}...')
+            data = pd.read_csv(f'{dataframes_folder_path}/{path}')
+        if path.endswith('.pkl'): 
+            logging.info(f'Found pkl dataframe for {path}...')
+            data = pd.read_pickle(f'{dataframes_folder_path}/{path}')
+        if path.endswith('.parquet'): 
+            logging.info(f'Found parquet dataframe for {path}...')
+            data = pd.read_parquet(f'{dataframes_folder_path}/{path}')
+        stock = dataframes_folder_path.split('_')[0]
+        date0 = dataframes_folder_path.split('_')[1]
+        date1 = dataframes_folder_path.split('_')[2]
+        date = f'{date0}_{date1}'
         # Rename the columns
         if 'message' in path:
             # if len(data.columns) > 6: eliminate the last column
-            if len(data.columns) > 6: data = data.drop(columns = data.columns[-1])
+            if len(data.columns) > 6: 
+                data = data.drop(columns = data.columns[-1])
             data.columns = ['Time', 'Event type', 'Order ID', 'Size', 'Price', 'Direction']
         elif 'orderbook' in path:
             n = data.shape[1]
-            ask_price_columns = [f'Ask price {i}' for i,j in zip(range(1, int(n/2)+1), range(0,n,4))]
-            ask_size_columns = [f'Ask size {i}' for i,j in zip(range(1, int(n/2)+1), range(1,n,4))]
-            bid_price_columns = [f'Bid price {i}' for i,j in zip(range(1, int(n/2)+1), range(2,n,4))]
-            bid_size_columns = [f'Bid size {i}' for i,j in zip(range(1, int(n/2)+1), range(3,n,4))]
+            ask_price_columns = [f'Ask price {i}' for i,j in zip(range(0, int(n/2)), range(0,n,4))]
+            ask_size_columns = [f'Ask size {i}' for i,j in zip(range(0, int(n/2)), range(1,n,4))]
+            bid_price_columns = [f'Bid price {i}' for i,j in zip(range(0, int(n/2)), range(2,n,4))]
+            bid_size_columns = [f'Bid size {i}' for i,j in zip(range(0, int(n/2)), range(3,n,4))]
             ask_columns = [[ask_price_columns[i], ask_size_columns[i]] for i in range(len(ask_size_columns))]
             bid_columns = [[bid_price_columns[i], bid_size_columns[i]] for i in range(len(bid_size_columns))]
             columns = np.array([[ask_columns[i], bid_columns[i]] for i in range(len(ask_size_columns))]).flatten()
             data.columns = columns
+        # Check if the folder exists
+        if not os.path.exists(f'../data/{stock}_{date}'):
+            os.makedirs(f'../data/{stock}_{date}')
+        # Save the dataframe
+        path = f"{path.split('.')[0]}.parquet"
         data.to_parquet(f'../data/{stock}_{date}/{path}')
     return None
+
+def preprocessing_orderbook_df(orderbook, message, sampling_seconds=10, discard_time=1800):
+    '''This function takes as input the orderbook dataframe provided by LOBSTER.com and preprocessed via
+    convert_and_renamecols and performs the following operations:
+    - Discard the a certain number of first and last rows of the dataframe, since they are likely "non stationary"
+    - Sample the dataframe every 10 seconds
+    - Reset the index
+    - Drop the columns Order ID and Time
+    
+    Parameters
+    ----------
+    orderbook : pandas dataframe
+        Orderbook dataframe preprocessed via convert_and_renamecols.
+    message : pandas dataframe
+        Message dataframe preprocessed via convert_and_renamecols. Used only to take the Time column.
+    discard_time : int
+        Number of seconds to discard from the beginning and the end of the dataframe. The default is 1800.
+    
+    Returns
+    -------
+    orderbook : pandas dataframe
+        Preprocessed orderbook dataframe.
+    [k, l] : list
+        List of two indexes: one corresponds to the 30th minute of the day and the other to the 30-minute-to-end minute.'''
+
+    # Take the Time column of message and add it to orderbook
+    orderbook['Time'] = message['Time']
+    logging.info(orderbook['Time'].values)
+
+    # Check the Time column and find the index k such that (orderbook['Time'][k] - orderbook['Time'][0])=discard_time
+    start = orderbook['Time'].values[0]
+    end = orderbook['Time'].values[-1]
+    for i in range(len(orderbook)):
+        if orderbook['Time'].values[i] - start >= discard_time:
+            k = i
+            break
+    logging.info(f'k: {k}')
+    for i in range(len(orderbook)):
+        if end - orderbook['Time'].values[-i] >= discard_time:
+            l = len(orderbook) - i
+            break
+    logging.info(f'l: {l}')
+    # Discard the first k and the last l rows
+    orderbook = orderbook.iloc[k:l, :]
+
+    # Initialize an empty list to store the indices of the rows to be selected
+    selected_indices = []
+
+    # Start with the first row
+    current_time = orderbook['Time'].values[0]
+    selected_indices.append(0)
+
+    # Iterate through the dataframe to select rows approximately sampling_seconds seconds apart
+    for i in range(1, len(orderbook)):
+        if orderbook['Time'].values[i] - current_time >= sampling_seconds:
+            selected_indices.append(i)
+            current_time = orderbook['Time'].values[i]
+
+    # Create a new dataframe with the selected rows
+    orderbook = orderbook.iloc[selected_indices]
+    orderbook = orderbook.reset_index(drop=True)
+    return orderbook, [k, l]
 
 def prices_and_volumes(orderbook):
     '''This function takes as input the orderbook dataframe and returns the bid and ask prices and volumes.
@@ -74,63 +156,6 @@ def prices_and_volumes(orderbook):
     ask_prices = np.array(orderbook[[f'Ask price {x}' for x in range(1, int(n/4)+1)]])
     ask_volumes = np.array(orderbook[[f'Ask size {x}' for x in range(1, int(n/4)+1)]])
     return bid_prices, bid_volumes, ask_prices, ask_volumes
-
-
-def preprocessing_orderbook_df(orderbook, message, discard_time):
-    '''This function takes as input the orderbook dataframe provided by LOBSTER.com and preprocessed via
-    rename_columns. It performs the following operations:
-    - Discard the first and last rows of the dataframe, since they are likely "non stationary"
-    - Sample the dataframe every 10 seconds
-    - Reset the index
-    - Drop the columns Order ID and Time
-    
-    Parameters
-    ----------
-    orderbook : pandas dataframe
-        Orderbook dataframe preprocessed via rename_columns.
-    message : pandas dataframe
-        Message dataframe preprocessed via rename_columns.
-    discard_time : int
-        Number of seconds to discard from the beginning and the end of the dataframe.
-    
-    Returns
-    -------
-    orderbook : pandas dataframe
-        Preprocessed orderbook dataframe.
-    [k, l] : list
-        List of two indexes: one corresponds to the 30th minute of the day and the other to the 30-minute-to-end minute.'''
-    # Take the Time column of message and add it to orderbook
-    orderbook['Time'] = message['Time']
-    # Check the Time column and find the index k such that (orderbook['Time'][k] - orderbook['Time'][0])=discard_time
-    start = orderbook['Time'].values[0]
-    end = orderbook['Time'].values[-1]
-
-    for i in range(len(orderbook)):
-        if orderbook['Time'].values[i] - start >= discard_time:
-            k = i
-            break
-    
-    for i in range(len(orderbook)):
-        if end - orderbook['Time'].values[-i] >= discard_time:
-            l = len(orderbook) - i
-            break
-
-    # Discard the first k and the last l rows
-    orderbook = orderbook.iloc[k:l, :]
-    # Initialize an empty list to store the indices of the rows to be selected
-    selected_indices = []
-    # Start with the first row
-    current_time = orderbook['Time'].values[0]
-    selected_indices.append(0)
-    # Iterate through the dataframe to select rows approximately 10 seconds apart
-    for i in range(1, len(orderbook)):
-        if orderbook['Time'].values[i] - current_time >= 10:
-            selected_indices.append(i)
-            current_time = orderbook['Time'].values[i]
-    # Create a new dataframe with the selected rows
-    orderbook = orderbook.iloc[selected_indices]
-    orderbook = orderbook.reset_index(drop=True)
-    return orderbook, [k, l]
 
 def volumes_per_level(ask_prices, bid_prices, ask_volumes, bid_volumes, depth):
     '''This function takes as input the bid and ask prices and volumes and returns the volumes at each price level
@@ -157,11 +182,12 @@ def volumes_per_level(ask_prices, bid_prices, ask_volumes, bid_volumes, depth):
 
     volume_ask = np.zeros(shape=(ask_prices.shape[0], depth))
     volume_bid = np.zeros(shape=(ask_prices.shape[0], depth))
-    for row in range(ask_prices.shape[0]):
+    for row in range(0, ask_prices.shape[0], 2):
         start_ask = ask_prices[row, 0] # best ask price
         start_bid = bid_prices[row, 0] # best bid price
         volume_ask[row, 0] = ask_volumes[row, 0] # volume at best ask
-        volume_bid[row, 0] = bid_volumes[row, 0] # volume at best bid
+        volume_bid[row, 0] = -bid_volumes[row, 0] # volume at best bid
+
         for i in range(1,depth): #from the 2th until the 4th tick price level
             if ask_prices[row, i] == start_ask + 100*i: # check if the next occupied level is one tick ahead
                 volume_ask[row, i] = ask_volumes[row, i]
@@ -169,11 +195,222 @@ def volumes_per_level(ask_prices, bid_prices, ask_volumes, bid_volumes, depth):
                 volume_ask[row, i] = 0
 
             if bid_prices[row, i] == start_bid - 100*i: # check if the next occupied level is one tick before
-                volume_bid[row, i] = bid_volumes[row, i]
+                volume_bid[row, i] = -bid_volumes[row, i]
             else:
                 volume_bid[row, i] = 0
-    return volume_ask, -volume_bid
 
+    return volume_ask, volume_bid
+
+def LOB_snapshots(orderbook, k, m, n):
+    '''This function's goal is to create the appropiate dataframe to be fed into the GAN in order to learn the transition
+    probabilities of the LOB of the form p(X(t+1), X(t+2),..., X(t+m)|X(t), X(t-1),...,X(t-n)).
+    It takes as input an orderbook dataframe (preprocessed via preprocessing_orderbook_df), the desired 
+    depth k of the LOB on both sides, the number of future timestamp m to consider and the number of past timestamps n to set
+    as condition.
+    
+    For instance, if k=3 is the depth of the LOB, the volumes array is composed by 2k+1=7 elements,
+    where the last value correspond do the price change in ticks. The length of the volume array is
+    2L-2, where L is the length of the orderbook dataframe.
+    
+    Example
+    -------
+    Consider the following LOB with k=3 and n,m=1 at time t:
+    0   1   2   3   4   5
+    |---|---|---|---|---|
+    Here 2 and 3 correspond to the best ask and bid prices, respectively.
+
+    At time t+1 either one of the following events can happen:
+    1) The best ask and bid prices remain the same (no price change)
+    2) The best ask increases (price goes up)
+    3) The best bid decreases (price goes down)
+
+    For every timestamp in the LOB, we center the LOB (snapshot at time t) and then we
+    consider what happens at the next timestamp (t+1), keeping fixed the price grid.
+
+    Note: here we suppose the spread is always of size equal to one tick.
+    '''
+    length = orderbook.shape[0]
+    logging.info(f'Length of the orderbook: {length}')
+    # the additional column 2k+1 is used to track the price change.
+    # The lenght is set to 2*length because I want to learn the transition probability p(X(t+1)|X(t))
+    # where X(t+1) becames X(t) at the next time step.
+    volumes = np.zeros(shape=(2*length-2, 2*k+1))
+
+    for i in range(0, length-n):
+        # Set the price grid for time t and create the LOB snapshot at time t
+        best_ask = orderbook['Ask price 0'].values[i]
+        best_bid = orderbook['Bid price 0'].values[i]
+        volumes[2*i, k] = orderbook['Ask size 0'].values[i]
+        volumes[2*i, k-1] = -orderbook['Bid size 0'].values[i]
+        volumes[2*i, -1] = 99
+        for j in range(1, k):
+            # Check if the next price levels are occupied
+            if orderbook[f'Ask price {j}'].values[i] == best_ask + 100*j:
+                volumes[2*i, k+j] = orderbook[f'Ask size {j}'].values[i]
+            else:
+                volumes[2*i, k+j] = 0
+
+            if orderbook[f'Bid price {j}'].values[i] == best_bid - 100*j:
+                volumes[2*i, k-(j+1)] = -orderbook[f'Bid size {j}'].values[i]
+            else:
+                volumes[2*i, k-(j+1)] = 0
+
+        # Now check the next timestamp. I consider just the next one because I want to learn the
+        # transition probability p(X(t+1)|X(t))
+
+        if orderbook['Ask price 0'].values[i+1] == best_ask:
+            volumes[2*i+1, k] = orderbook['Ask size 0'].values[i]
+            volumes[2*i+1, k-1] = -orderbook['Bid size 0'].values[i]
+            # No price change at t+1. Best bid and best ask remain the same
+            volumes[2*i+1,-1] = 0
+            for j in range(1, k):
+                if orderbook[f'Ask price {j}'].values[i+1] == best_ask + 100*j:
+                    volumes[2*i+1, k+j] = orderbook[f'Ask size {j}'].values[i+1]
+                else:
+                    volumes[2*i+1, k+j] = 0
+                if orderbook[f'Bid price {j}'].values[i+1] == best_bid - 100*j:
+                    volumes[2*i+1, k-(j+1)] = -orderbook[f'Bid size {j}'].values[i+1]
+                else:
+                    volumes[2*i+1, k-(j+1)] = 0
+
+        elif orderbook['Ask price 0'].values[i+1] > best_ask:
+            # Price increased. Best ask and best bid change
+            diff = (orderbook['Ask price 0'].values[i+1] - best_ask) // 100
+            volumes[2*i+1,-1] = diff
+            if diff > k:
+                best_bid = orderbook['Bid price 0'].values[i+1]
+                volumes[2*i+1, 2*k-1] = -orderbook['Bid size 0'].values[i+1]
+                for l in range(1, 5):
+                    if orderbook[f'Bid price {l}'].values[i+1] == best_bid - 100*l:
+                        volumes[2*i+1, 2*k-1-l] = -orderbook[f'Bid size {l}'].values[i+1]
+                    else:
+                        volumes[2*i+1, 2*k-1-l] = 0
+            else:
+                best_ask = orderbook['Ask price 0'].values[i+1]
+                best_bid = orderbook['Bid price 0'].values[i+1]
+                volumes[2*i+1, k+diff] = orderbook['Ask size 0'].values[i+1]
+                volumes[2*i+1, k-1+diff] = -orderbook['Bid size 0'].values[i+1]
+                for j, l in zip(range(1, k-diff), range(1, k)):
+                    if orderbook[f'Ask price {l}'].values[i+1] == best_ask + 100*j:
+                        volumes[2*i+1, k+diff+j] = orderbook[f'Ask size {l}'].values[i+1]
+                    else:
+                        volumes[2*i+1, k+diff+j] = 0
+                for j, l in zip(range(1, k-1+diff), range(1, k)):
+                    if orderbook[f'Bid price {l}'].values[i+1] == best_bid - 100*j:
+                        volumes[2*i+1, k-1+diff-j] = -orderbook[f'Bid size {l}'].values[i+1]
+                    else:
+                        volumes[2*i+1, k-1+diff-j] = 0
+
+        # Price decreased
+        elif orderbook['Ask price 0'].values[i+1] < best_ask:
+            diff = (best_ask - orderbook['Ask price 0'].values[i+1]) // 100
+            volumes[2*i+1, -1] = -diff
+            if diff > k:
+                best_ask = orderbook['Ask price 0'].values[i+1]
+                volumes[2*i+1, 0] = orderbook['Ask size 0'].values[i+1]
+                for l in range(1, 5):
+                    if orderbook[f'Ask price {l}'].values[i+1] == best_ask + 100*l:
+                        volumes[2*i+1, l] = orderbook[f'Ask size {l}'].values[i+1]
+                    else:
+                        volumes[2*i+1, l] = 0
+            else:
+                best_ask = orderbook['Ask price 0'].values[i+1]
+                best_bid = orderbook['Bid price 0'].values[i+1]
+                volumes[2*i+1, k-diff] = orderbook['Ask size 0'].values[i+1]
+                volumes[2*i+1, k-diff-1] = -orderbook['Bid size 0'].values[i+1]
+                for j,l in zip(range(1, k+diff), range(1, k)):
+                    if orderbook[f'Ask price {j}'].values[i+1] == best_ask + 100*j:
+                        volumes[2*i+1, k-diff+j] = orderbook[f'Ask size {l}'].values[i+1]
+                    else:
+                        volumes[2*i+1, k-diff+j] = 0
+                for j, l in zip(range(1, k-diff), range(1, k)):
+                    if orderbook[f'Bid price {l}'].values[i+1] == best_bid - 100*j:
+                        volumes[2*i+1, k-diff-1-j] = -orderbook[f'Bid size {l}'].values[i+1]
+                    else:
+                        volumes[2*i+1, k-diff-1-j] = 0
+        else:
+            logging.info('Something wrong in the LOB snapshots function. Check the code logic.')
+    return volumes
+
+def compute_spread(orderbook):
+    '''This function computes the spread of the orderbook dataframe.'''
+    spread = orderbook['Ask price 0'] - orderbook['Bid price 0']
+    return spread
+
+def create_LOB_snapshots(N, depth, previous_days=False):
+    """
+    This function creates the LOB snapshots dataframe with the following features:
+
+    - volumes_ask_i: volume of the i-th ask level
+    - volumes_bid_i: volume of the i-th bid level
+    - spread: spread of the orderbook
+
+    The values are preprocessed using the preprocessing_orderbook_df function. Then, they are normalized 
+    through the transformation \( x \rightarrow \text{sign}(x)\sqrt{|x|} \times 0.1 \).
+
+    Parameters
+    ----------
+    N : int
+        Day number of number of days to consider. Check previous_days parameter.
+    previous_days : bool, optional
+        If True, consider all the data from the 0th to the Nth day. 
+        If False, consider only the Nth day. The default is True.
+
+    Returns
+    -------
+    orderbook_df : pandas.DataFrame
+        Dataframe containing the orderbook data with the specified features.
+    """
+
+    # Load data parameters
+    stock = 'MSFT'
+    date = '2018-04-01_2018-04-30_5'
+    total_depth = 5
+
+    # Read the dataframes
+    dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
+    orderbook_df_paths = [path for path in dataframes_paths if 'orderbook' in path]
+    orderbook_df_paths.sort()
+    message_df_paths = [path for path in dataframes_paths if 'message' in path]
+    message_df_paths.sort()
+
+    if previous_days:
+        orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][:N]
+        message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][:N]
+        # Preprocess the data using preprocessing_orderbook_df
+        orderbook_dfs, _ = zip(*[(preprocessing_orderbook_df(df, msg, sampling_seconds=2, discard_time=1800)) for df, msg in zip(orderbook_dfs, message_dfs)])
+        # Merge all the dataframes into a single one
+        orderbook_df = pd.concat(orderbook_dfs, ignore_index=True)
+    else:
+        orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][N-1]
+        message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][N-1]
+        orderbook_df, _ = preprocessing_orderbook_df(orderbook_dfs, message_dfs, discard_time=1800)
+
+    
+    # Compute the spread
+    spread = compute_spread(orderbook_df)
+    # Save the spread
+    np.save(f'../data/{stock}_{date}/spread.npy', spread)
+
+    # Compute the volumes considering also empty levels.
+    volumes = LOB_snapshots(orderbook_df, depth, 1, 1)
+
+    # Create the dataframe
+    columns = [f'BidVol_{i}' for i in range(depth-1, -1,-1)] + [f'AskVol_{i}' for i in range(0, depth)]
+    snapshots_df = pd.DataFrame(volumes[:, :-1], columns=columns)
+    price_change = volumes[:,-1]
+    np.save(f'../data/{stock}_{date}/price_change_{N}.npy', price_change)
+
+    # Add the spread
+    # snapshots_df['spread'] = spread
+
+    # Normalize the data
+    snapshots_df = snapshots_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
+
+    # Save the dataframe
+    snapshots_df.to_parquet(f'../data/{stock}_{date}/snapshots_df_{N}.parquet')
+
+    return snapshots_df, price_change
 
 @nb.jit(nopython=True)
 def divide_into_windows(data, window_size):
@@ -376,7 +613,6 @@ def transform_and_reshape(tensor, T_gen, n_features, c=10):
     tensor_flat = tf.reshape(tensor_flat, [-1, T_gen, n_features])
     return tensor_flat
 
-
 def plot_samples(dataset, generator_model, noise, features, T_gen, n_features_gen, job_id, epoch, args):
     '''This function plots several metrics that track the training process of the GAN. Specifically, it plots:
     - The generated samples
@@ -549,8 +785,8 @@ def correlation_matrix(dataset, generator_model, noise, T_gen, n_features_gen, j
     k = 0
     for batch_condition, batch in dataset:
         batch_size = batch.shape[0]
-        # noise = tf.random.normal([batch_size, 300, 6])
-        gen_sample = generator_model([noise[k], batch_condition])
+        noise = tf.random.normal([batch_size, 300, 6])
+        gen_sample = generator_model([noise, batch_condition])
         gen_sample = transform_and_reshape(gen_sample, T_gen, n_features_gen)
         batch = transform_and_reshape(batch, T_gen, n_features_gen)
         for i in range(gen_sample.shape[0]):
@@ -595,8 +831,13 @@ def correlation_matrix(dataset, generator_model, noise, T_gen, n_features_gen, j
     # Now compute the standard deviations for each set of elements
     standard_deviations_gen = np.std(stacked_elements_gen, axis=0)
     standard_deviations_real = np.std(stacked_elements_real, axis=0)
+    # Now compute the mean of the elements
+    mean_gen = np.mean(stacked_elements_gen, axis=0)
+    mean_real = np.mean(stacked_elements_real, axis=0)
     # Create a matrix n_features_gen x n_features_gen that has 0 non the diagonal and the standard deviations on the upper triangle
     std_matrix_gen = np.zeros((n_features_gen, n_features_gen))
+    # do the same for the mean
+    mean_matrix_gen = np.zeros((n_features_gen, n_features_gen))
     tri_indices = np.triu_indices(n_features_gen, k=1)
     n_elements = int(n_features_gen*(n_features_gen-1)/2)
     std_matrix_gen[tri_indices[0][:n_elements], tri_indices[1][:n_elements]] = standard_deviations_gen
@@ -604,6 +845,12 @@ def correlation_matrix(dataset, generator_model, noise, T_gen, n_features_gen, j
     std_matrix_real = np.zeros((n_features_gen, n_features_gen))
     std_matrix_real[tri_indices[0][:n_elements], tri_indices[1][:n_elements]] = standard_deviations_real
     std_matrix_real = std_matrix_real + std_matrix_real.T
+    mean_matrix_gen[tri_indices[0][:n_elements], tri_indices[1][:n_elements]] = mean_gen
+    mean_matrix_gen = mean_matrix_gen + mean_matrix_gen.T
+    mean_matrix_real = np.zeros((n_features_gen, n_features_gen))
+    mean_matrix_real[tri_indices[0][:n_elements], tri_indices[1][:n_elements]] = mean_real
+    mean_matrix_real = mean_matrix_real + mean_matrix_real.T
+
 
     logging.info(f'Std matrix of the generated samples:\n{std_matrix_gen}')
     logging.info(f'Std matrix of the real samples:\n{std_matrix_real}')
@@ -622,7 +869,7 @@ def correlation_matrix(dataset, generator_model, noise, T_gen, n_features_gen, j
     k = 0
     for i in range(correlation_matrix_gen.shape[0]):
         for j in range(correlation_matrix_gen.shape[1]):
-            text_str = f"{format(correlation_matrix_gen[i, j], '.2f')} \n ({format(2*std_matrix_gen[i, j], '.2e')})"
+            text_str = f"{format(correlation_matrix_gen[i, j], '.2f')} \n ({format(mean_matrix_gen[i, j], '.2e')} \n ± {format(2*std_matrix_gen[i, j], '.2e')})"
             axes[0].text(j, i, text_str,
                 ha='center', va='center',
                 color='black', fontsize=7)
@@ -635,7 +882,7 @@ def correlation_matrix(dataset, generator_model, noise, T_gen, n_features_gen, j
     axes[1].set_yticklabels(features)
     for i in range(correlation_matrix_real.shape[0]):
         for j in range(correlation_matrix_real.shape[1]):
-            text_str = f"{format(correlation_matrix_real[i, j], '.2f')} \n ({format(2*std_matrix_real[i, j], '.2e')})"
+            text_str = f"{format(correlation_matrix_real[i, j], '.2f')} \n ({format(mean_matrix_real[i, j], '.2e')} \n ± {format(2*std_matrix_real[i, j], '.2e')})"
             axes[1].text(j, i, text_str,
                     ha='center', va='center',
                     color='black', fontsize=7)
@@ -712,7 +959,6 @@ def create_animated_gif(job_id):
     # Eliminate all the images
     for image_file in image_files:
         os.remove(os.path.join(f'plots/{image_folder}', image_file))
-
 
 def sin_wave(amplitude, omega, phi, change_amplitude=False):
     '''This function generates a sine wave with the specified parameters.
@@ -922,90 +1168,12 @@ def anomaly_injection_orderbook(fp, T_condition, depth, ampl, anomaly_type):
                 data[chosen_window, chosen_timestamp, 1:2*depth:2] = 0
     return data, chosen_windows, chosen_feature
 
-def compute_spread(orderbook):
-    '''This function computes the spread of the orderbook dataframe.'''
-    spread = orderbook['Ask price 1'] - orderbook['Bid price 1']
-    return spread
-
-def create_orderbook_dataframe(N, previos_days=True):
-    '''This function create the orderbook dataframe with the following features:
-    - volumes_ask_i: volume of the i-th ask level
-    - volumes_bid_i: volume of the i-th bid level
-    - spread: spread of the orderbook
-    
-    The values are preprocessed using the preprocessing_orderbook_df function. Then, they are normalized
-    through the transformation x -> sign(x)*sqrt(|x|)*0.1.
-    Parameters
-    ----------
-    N : int
-        Number of days to consider.
-    previos_days : bool, optional
-        If True, the data of the previous days are considered. The default is True.
-    
-    Returns
-    -------
-    orderbook_df : pandas dataframe
-        Dataframe containing the orderbook data with the specified features.'''
-    # Load data
-    stock = 'MSFT'
-    date = '2018-04-01_2018-04-30_5'
-    total_depth = 5
-
-    # Read the dataframes
-    dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
-    orderbook_df_paths = [path for path in dataframes_paths if 'orderbook' in path]
-    orderbook_df_paths.sort()
-    message_df_paths = [path for path in dataframes_paths if 'message' in path]
-    message_df_paths.sort()
-    if previos_days:
-        orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][:N]
-        message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][:N]
-        # Preprocess the data using preprocessing_orderbook_df
-        orderbook_dfs, _ = zip(*[(preprocessing_orderbook_df(df, msg, discard_time=1800)) for df, msg in zip(orderbook_dfs, message_dfs)])
-        # Merge all the dataframes into a single one
-        orderbook_df = pd.concat(orderbook_dfs, ignore_index=True)
-    else:
-        orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][N]
-        message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][N]
-        orderbook_df, _ = preprocessing_orderbook_df(orderbook_dfs, message_dfs, discard_time=1800)
-
-    
-    # Compute the spread
-    spread = compute_spread(orderbook_df)
-    # Extract the prices and volumes
-    bid_prices, bid_volumes, ask_prices, ask_volumes = prices_and_volumes(orderbook_df)
-    # Compute the volumes considering also empty levels
-    volumes_ask, volumes_bid = volumes_per_level(ask_prices, bid_prices, ask_volumes, bid_volumes, total_depth)
-    # Create a dataframe with the volumes
-    orderbook_df = pd.DataFrame()
-    for i in range(total_depth):
-        orderbook_df[f'volumes_ask_{i+1}'] = volumes_ask[:, i]
-        orderbook_df[f'volumes_bid_{i+1}'] = volumes_bid[:, i]
-    # Add the spread
-    orderbook_df['spread'] = spread
-    # Normalize the data
-    orderbook_df = orderbook_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
-    return orderbook_df
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='''This script several functions used to pre and post process the data.''')
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
-    parser.add_argument('-N', '--N_days', type=int, help='Number of the day to consider')
-    parser.add_argument('-d', '--depth', help='Depth of the orderbook', type=int)
-    parser.add_argument('-bs', '--batch_size', help='Batch size', type=int)
-    parser.add_argument('-ld', '--latent_dim', help='Latent dimension', type=int)
-    parser.add_argument('-nlg', '--n_layers_gen', help='Number of generator layers', type=int)
-    parser.add_argument('-nld', '--n_layers_disc', help='Number of discriminator layers', type=int)
-    parser.add_argument('-tg', '--type_gen', help='Type of generator model (conv, lstm, dense)', type=str)
-    parser.add_argument('-td', '--type_disc', help='Type of discriminator model (conv, lstm, dense)', type=str)
-    parser.add_argument('-sc', '--skip_connection', action='store_true', help='Use or not skip connections')
-    parser.add_argument('-Tc', '--T_condition', help='Number of time steps to condition on', type=int, default=2)
-    parser.add_argument('-Tg', '--T_gen', help='Number of time steps to generate', type=int, default=1)
-    parser.add_argument('-ls', '--loss', help='Loss function (original, wasserstein)', type=str, default='original')
-    parser.add_argument('-lo', '--load', help='Load a model. The job_id must be provided', type=int)
 
     args = parser.parse_args()
     levels = {'critical': logging.CRITICAL,
@@ -1019,7 +1187,7 @@ if __name__ == "__main__":
     else:
         job_id = os.getpid()
     
-    logging.basicConfig(filename=f'data_utils_{job_id}.log', format='%(message)s', level=levels[args.log])
+    logging.basicConfig(filename=f'logs/data_utils_{job_id}.log', format='%(message)s', level=levels[args.log])
 
     logger = tf.get_logger()
     logger.setLevel('ERROR')
@@ -1034,133 +1202,26 @@ if __name__ == "__main__":
     # Load the data
     stock = 'MSFT'
     date = '2018-04-01_2018-04-30_5'
-    batch_size = args.batch_size
-    T_gen = args.T_gen
-    T_condition = args.T_condition
-    latent_dim = args.latent_dim*T_gen
-    n_features_gen = 6
-    window_size = T_gen + T_condition
-    N = args.N_days
-    prev_job_id = args.load
-
-    logging.info(f'Loaded model:\n\t{prev_job_id}')
     
-    # Check if the orderflow is stationary or not
-    # N = 10
-    # p_values = np.zeros((N,6))
-    # for n in range(N):
-    #     logging.info(f'Day {n}')
-    #     orderbook = create_orderbook_dataframe(N)
-    #     columns = orderbook.columns
-    #     for col in range(6):
-    #         res = adfuller(orderbook[columns[col]].values)
-    #         p_values[n, col] = res[1]
-    #         logging.info(f'p-value for {columns[col]}: {res[1]}')
-    
-    # # Visualize p_values matrix using imshow with a colorbar
-    # fig, ax = plt.subplots(figsize=(10, 10))
-    # im = ax.imshow(p_values, cmap='viridis_r', vmin=0, vmax=1)
-    # ax.set_title('ADF test p-values')
-    # ax.set_xlabel('Features')
-    # ax.set_ylabel('Days')
-    # ax.set_xticks(np.arange(len(columns[:6])))
-    # ax.set_yticks(np.arange(N))
-    # ax.set_xticklabels(columns[:6])
-    # ax.set_yticklabels(np.arange(N))
-    # # Rotate the tick labels and set their alignment.
-    # plt.setp(ax.get_xticklabels(), rotation=45, ha="right",
-    #         rotation_mode="anchor")
-    # # Loop over data dimensions and create text annotations.
-    # for i in range(N):
-    #     for j in range(6):
-    #         text = ax.text(j, i, f"{p_values[i, j]:.2e}",
-    #                     ha="center", va="center", color="black", fontsize=11)
-    # fig.tight_layout()
-    # plt.savefig(f'plots/ADF_test_p_values.png')
+    dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
+    orderbook_df_paths = [path for path in dataframes_paths if 'orderbook' in path]
+    orderbook_df_paths.sort()
+    message_df_paths = [path for path in dataframes_paths if 'message' in path]
+    message_df_paths.sort()
 
-
-    logging.info('Loading input_train, input_validation and input_test sets...')
-    input_train = np.load(f'../data/input_train_{stock}_{window_size}_day{N}_orderbook.npy', mmap_mode='r')
-    condition_train = np.load(f'../data/condition_train_{stock}_{window_size}_day{N}_orderbook.npy', mmap_mode='r')
-
-    logging.info(f'input_train shape:\n\t{input_train.shape}')
-    logging.info(f'condition_train shape:\n\t{condition_train.shape}')
-    dataset_train = tf.data.Dataset.from_tensor_slices((condition_train, input_train)).batch(batch_size)
-    
-    # Load the best generator
-    generator_model = tf.keras.models.load_model(f'models/{prev_job_id}.pbs01_dense_dense_3_3_50_original/generator_model.h5')
-    
-    # generator_model.summary(print_fn=logging.info)
-    
-    generated_samples = []
-    real_samples = []
-    k = 0
-    for batch_condition, batch in dataset_train:
-        batch_size = batch.shape[0]
-        noise = tf.random.normal([batch_size, latent_dim, batch.shape[2]])
-        gen_sample = generator_model([noise, batch_condition])
-        for i in range(gen_sample.shape[0]):
-            # All the appended samples will be of shape (T_gen, n_features_gen)
-            generated_samples.append(gen_sample[i, -1, :])
-            real_samples.append(batch[i, -1, :])
-        k += 1
-    generated_samples = np.array(generated_samples)
-    real_samples = np.array(real_samples)
-
-    generated_samples = generated_samples.reshape(generated_samples.shape[0], generated_samples.shape[1])
-    real_samples = real_samples.reshape(real_samples.shape[0], real_samples.shape[1])
-    np.save(f'../data/generated_samples_{prev_job_id}.npy', generated_samples)
-    np.save(f'../data/real_samples_{prev_job_id}.npy', real_samples)
-    # _, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
-    # plot_acf(generated_samples[:, 0], lags=20, ax=axes[0])
-    # plot_acf(real_samples[:, 0], lags=20, ax=axes[1])
-    # plt.savefig(f'plots/{prev_job_id}.pbs01_dense_dense_3_3_50_original/acf_day{N}.png')
-    # plt.close()
-    logging.info('Plotting the first 2 principal components of the generated and real samples...')
-    plot_pca_with_marginals(generated_samples, real_samples, prev_job_id, args)
-    logging.info('Done.')
-
-    logging.info('Computing the average LOB shape')
-    features = ['ask_volume_1', 'bid_volume_1', 'ask_volume_2', 'bid_volume_2', 'ask_volume_3', 'bid_volume_3']
-    means_real, means_gen, p_values = [], [], []
-    for i in range(n_features_gen):
-        d_gen = np.round(generated_samples[:, i].flatten())
-        d_real = real_samples[:, i].flatten()
-        _, p_value = ttest_ind(d_gen, d_real, equal_var=False)
-        means_real.append(np.mean(d_real))
-        means_gen.append(np.mean(d_gen))
-        p_values.append(p_value)
-
-    width = 0.4  # Width of the bars
-    indices = np.arange(len(features))  # Create indices for the x position
-    indices1 = np.concatenate((np.arange(1,len(features),2)[::-1], np.arange(0,len(features),2)))
-    print(np.array(features)[indices1])
-
-    data = list(zip(features, p_values))
-
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
-    axes[0].bar(indices - width/2, np.array(means_gen)[indices1], width=width, label='Generated', alpha=0.85)  # Adjust x position for 'Generated' bars
-    axes[0].bar(indices + width/2, np.array(means_real)[indices1], width=width, label='Real', alpha=0.85)  # Adjust x position for 'Real' bars
-    axes[0].set_title(f'Average_LOB_shape')
-    axes[0].set_xlabel('Levels')
-    axes[0].set_xticks(indices)  # Set the x-tick labels to your features
-    axes[0].set_xticklabels(np.array(features)[indices1], rotation=60)  # Rotate the x-tick labels by 90 degrees
-    axes[0].legend()
-    # Remove axes
-    axes[1].axis('tight')
-    axes[1].axis('off')
-    # Create table and add it to the plot
-    data = [(feat, f"{p:.2e}") for feat, p in data] # modify data to contain numbers in exponential form with 2 decimal positions
-    axes[1].table(cellText=data, cellLoc='center', loc='center')
-    # Add a title to the table
-    axes[1].set_title(f"Welch's t-test p-values")
-    plt.savefig(f'plots/{prev_job_id}.pbs01_dense_dense_3_3_50_original/average_LOB_shape.png')
-    plt.close()
-    logging.info('Done.')
-
-    logging.info('Computing the errors on the correlation matrix using bootstrap...')
-    noises = tf.random.normal([1, batch_size, latent_dim, input_train.shape[2]])
-    correlation_matrix(dataset_train, generator_model, noises, T_gen, n_features_gen, prev_job_id, bootstrap_iterations=5000)
-    logging.info('Done.')
+    orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][0]
+    message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][0]
+    for sec in np.arange(0,10,0.5):
+        # Preprocess the data using preprocessing_orderbook_df
+        dfs, _ = zip(*[(preprocessing_orderbook_df(df, msg, sampling_seconds=sec, discard_time=1800)) for df, msg in zip(orderbook_dfs, message_dfs)])
+        # Merge all the dataframes into a single one
+        orderbook_df = pd.concat(dfs, ignore_index=True)
+        best_ask = orderbook_df['Ask price 0'].values//100
+        ret = np.diff(best_ask)
+        values, counts = np.unique(ret, return_counts=True)
+        plt.figure(figsize=(10, 5), tight_layout=True)
+        plt.bar(values, counts)
+        plt.savefig(f'plots/ret_{sec}.png')
+        plt.close()
     
 

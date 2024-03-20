@@ -76,7 +76,7 @@ if __name__ == '__main__':
     depth = args.depth
 
     # Create the orderbook dataframe
-    orderbook_df = create_orderbook_dataframe(N, previos_days=False)
+    orderbook_df = create_LOB_snapshots(N, previos_days=False)
     # Compute the first two moments
     means, stds = orderbook_df.mean(), orderbook_df.std()
 

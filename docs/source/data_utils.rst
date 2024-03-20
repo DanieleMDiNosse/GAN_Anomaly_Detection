@@ -1,5 +1,5 @@
-data_utils Documentation
-=======================
+Data utils Documentation
+========================
 
 .. automodule:: data_utils
     :members:
