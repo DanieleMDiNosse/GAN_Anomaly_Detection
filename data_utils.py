@@ -1,5 +1,4 @@
-'''This script is aimed to preprocess the data for model training. There is no much work to do: the idea is to simply feed the GAN with a multivariate time series
-composed by a sliding window that shifts by one time step each time.'''
+'''This script is aimed to preprocess the data for model training.'''
 
 import numpy as np
 import pandas as pd
@@ -13,13 +12,11 @@ from PIL import ImageDraw
 from statsmodels.tsa.ar_model import AutoReg
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from scipy.stats import normaltest, ttest_ind
-from statsmodels.tsa.stattools import adfuller
 import math
 from sklearn.decomposition import PCA
 import seaborn as sns
-from statsmodels.graphics.tsaplots import plot_acf
 
-def convert_and_renamecols(dataframes_folder_path):
+def convert_and_renamecols(path):
     '''This function takes as input the path of the folder containing the dataframes and renames the columns
     of the message and orderbook dataframes. Then, it saves the dataframes in the same folder as a parquet
     dataframe.
@@ -33,46 +30,43 @@ def convert_and_renamecols(dataframes_folder_path):
     -------
     None.'''
 
-    # Read the message dataframes
-    dataframes_paths = os.listdir(f'{dataframes_folder_path}/')
-    dataframes_paths.sort()
-    # dataframes = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in dataframes_paths]
-    for path in dataframes_paths:
-        if path.endswith('.csv'): 
-            logging.info(f'Found csv dataframe for {path}...')
-            data = pd.read_csv(f'{dataframes_folder_path}/{path}')
-        if path.endswith('.pkl'): 
-            logging.info(f'Found pkl dataframe for {path}...')
-            data = pd.read_pickle(f'{dataframes_folder_path}/{path}')
-        if path.endswith('.parquet'): 
-            logging.info(f'Found parquet dataframe for {path}...')
-            data = pd.read_parquet(f'{dataframes_folder_path}/{path}')
-        stock = dataframes_folder_path.split('_')[0]
-        date0 = dataframes_folder_path.split('_')[1]
-        date1 = dataframes_folder_path.split('_')[2]
-        date = f'{date0}_{date1}'
-        # Rename the columns
-        if 'message' in path:
-            # if len(data.columns) > 6: eliminate the last column
-            if len(data.columns) > 6: 
-                data = data.drop(columns = data.columns[-1])
-            data.columns = ['Time', 'Event type', 'Order ID', 'Size', 'Price', 'Direction']
-        elif 'orderbook' in path:
-            n = data.shape[1]
-            ask_price_columns = [f'Ask price {i}' for i,j in zip(range(0, int(n/2)), range(0,n,4))]
-            ask_size_columns = [f'Ask size {i}' for i,j in zip(range(0, int(n/2)), range(1,n,4))]
-            bid_price_columns = [f'Bid price {i}' for i,j in zip(range(0, int(n/2)), range(2,n,4))]
-            bid_size_columns = [f'Bid size {i}' for i,j in zip(range(0, int(n/2)), range(3,n,4))]
-            ask_columns = [[ask_price_columns[i], ask_size_columns[i]] for i in range(len(ask_size_columns))]
-            bid_columns = [[bid_price_columns[i], bid_size_columns[i]] for i in range(len(bid_size_columns))]
-            columns = np.array([[ask_columns[i], bid_columns[i]] for i in range(len(ask_size_columns))]).flatten()
-            data.columns = columns
-        # Check if the folder exists
-        if not os.path.exists(f'../data/{stock}_{date}'):
-            os.makedirs(f'../data/{stock}_{date}')
-        # Save the dataframe
-        path = f"{path.split('.')[0]}.parquet"
-        data.to_parquet(f'../data/{stock}_{date}/{path}')
+    # # Read the message dataframes
+    # dataframes_paths = os.listdir(f'{dataframes_folder_path}/')
+    # dataframes_paths.sort()
+    # for path in dataframes_paths:
+    logging.info(path)
+    if path.endswith('.csv'): 
+        logging.info(f'Found csv dataframe for {path}...')
+        data = pd.read_csv(f'{path}')
+    if path.endswith('.pkl'): 
+        logging.info(f'Found pkl dataframe for {path}...')
+        data = pd.read_pickle(f'{path}')
+    if path.endswith('.parquet'): 
+        logging.info(f'Found parquet dataframe for {path}...')
+        data = pd.read_parquet(f'{path}')
+
+    # Rename the columns
+    if 'message' in path:
+        # if len(data.columns) > 6: eliminate the last column
+        if len(data.columns) > 6: 
+            data = data.drop(columns = data.columns[-1])
+        data.columns = ['Time', 'Event type', 'Order ID', 'Size', 'Price', 'Direction']
+    elif 'orderbook' in path:
+        n = data.shape[1]
+        ask_price_columns = [f'Ask price {i}' for i,j in zip(range(0, int(n/2)), range(0,n,4))]
+        ask_size_columns = [f'Ask size {i}' for i,j in zip(range(0, int(n/2)), range(1,n,4))]
+        bid_price_columns = [f'Bid price {i}' for i,j in zip(range(0, int(n/2)), range(2,n,4))]
+        bid_size_columns = [f'Bid size {i}' for i,j in zip(range(0, int(n/2)), range(3,n,4))]
+        ask_columns = [[ask_price_columns[i], ask_size_columns[i]] for i in range(len(ask_size_columns))]
+        bid_columns = [[bid_price_columns[i], bid_size_columns[i]] for i in range(len(bid_size_columns))]
+        columns = np.array([[ask_columns[i], bid_columns[i]] for i in range(len(ask_size_columns))]).flatten()
+        data.columns = columns
+
+    # Save the dataframe
+    name = f"{path.split('/')[3].split('.')[0]}.parquet"
+    folder = path.split('/')[2]
+    logging.info(name)
+    data.to_parquet(f'../data/{folder}/{name}')
     return None
 
 def preprocessing_orderbook_df(orderbook, message, sampling_seconds=10, discard_time=1800):
@@ -101,7 +95,6 @@ def preprocessing_orderbook_df(orderbook, message, sampling_seconds=10, discard_
 
     # Take the Time column of message and add it to orderbook
     orderbook['Time'] = message['Time']
-    logging.info(orderbook['Time'].values)
 
     # Check the Time column and find the index k such that (orderbook['Time'][k] - orderbook['Time'][0])=discard_time
     start = orderbook['Time'].values[0]
@@ -110,12 +103,10 @@ def preprocessing_orderbook_df(orderbook, message, sampling_seconds=10, discard_
         if orderbook['Time'].values[i] - start >= discard_time:
             k = i
             break
-    logging.info(f'k: {k}')
     for i in range(len(orderbook)):
         if end - orderbook['Time'].values[-i] >= discard_time:
             l = len(orderbook) - i
             break
-    logging.info(f'l: {l}')
     # Discard the first k and the last l rows
     orderbook = orderbook.iloc[k:l, :]
 
@@ -230,7 +221,7 @@ def LOB_snapshots(orderbook, k, m, n):
     Note: here we suppose the spread is always of size equal to one tick.
     '''
     length = orderbook.shape[0]
-    logging.info(f'Length of the orderbook: {length}')
+    logging.info(f'Length of the original orderbook datafrme:\n\t{length}')
     # the additional column 2k+1 is used to track the price change.
     # The lenght is set to 2*length because I want to learn the transition probability p(X(t+1)|X(t))
     # where X(t+1) becames X(t) at the next time step.
@@ -365,11 +356,11 @@ def create_LOB_snapshots(N, depth, previous_days=False):
     # Load data parameters
     stock = 'MSFT'
     date = '2018-04-01_2018-04-30_5'
-    total_depth = 5
 
     # Read the dataframes
     dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
     orderbook_df_paths = [path for path in dataframes_paths if 'orderbook' in path]
+    logging.info(orderbook_df_paths)
     orderbook_df_paths.sort()
     message_df_paths = [path for path in dataframes_paths if 'message' in path]
     message_df_paths.sort()
@@ -377,6 +368,8 @@ def create_LOB_snapshots(N, depth, previous_days=False):
     if previous_days:
         orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][:N]
         message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][:N]
+        logging.info(f'Loaded {N} days of data')
+        logging.info(f'Original shape of the dataframes:\n\t{orderbook_dfs[0].shape}')
         # Preprocess the data using preprocessing_orderbook_df
         orderbook_dfs, _ = zip(*[(preprocessing_orderbook_df(df, msg, sampling_seconds=2, discard_time=1800)) for df, msg in zip(orderbook_dfs, message_dfs)])
         # Merge all the dataframes into a single one
@@ -384,13 +377,16 @@ def create_LOB_snapshots(N, depth, previous_days=False):
     else:
         orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][N-1]
         message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][N-1]
+        logging.info(f'Loaded {N-1}th day of data')
+        logging.info(f'Original shape of the dataframes:\n\t{orderbook_dfs.shape}')
         orderbook_df, _ = preprocessing_orderbook_df(orderbook_dfs, message_dfs, discard_time=1800)
-
     
     # Compute the spread
     spread = compute_spread(orderbook_df)
     # Save the spread
-    np.save(f'../data/{stock}_{date}/spread.npy', spread)
+    if not os.path.exists(f'../data/{stock}_{date}/miscellaneous'):
+        os.makedirs(f'../data/{stock}_{date}/miscellaneous')
+    np.save(f'../data/{stock}_{date}/miscellaneous/spread.npy', spread)
 
     # Compute the volumes considering also empty levels.
     volumes = LOB_snapshots(orderbook_df, depth, 1, 1)
@@ -399,7 +395,7 @@ def create_LOB_snapshots(N, depth, previous_days=False):
     columns = [f'BidVol_{i}' for i in range(depth-1, -1,-1)] + [f'AskVol_{i}' for i in range(0, depth)]
     snapshots_df = pd.DataFrame(volumes[:, :-1], columns=columns)
     price_change = volumes[:,-1]
-    np.save(f'../data/{stock}_{date}/price_change_{N}.npy', price_change)
+    np.save(f'../data/{stock}_{date}/miscellaneous/price_change_{N}.npy', price_change)
 
     # Add the spread
     # snapshots_df['spread'] = spread
@@ -408,7 +404,7 @@ def create_LOB_snapshots(N, depth, previous_days=False):
     snapshots_df = snapshots_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
 
     # Save the dataframe
-    snapshots_df.to_parquet(f'../data/{stock}_{date}/snapshots_df_{N}.parquet')
+    snapshots_df.to_parquet(f'../data/{stock}_{date}/miscellaneous/snapshots_df_{N}.parquet')
 
     return snapshots_df, price_change
 
@@ -695,18 +691,17 @@ def plot_samples(dataset, generator_model, noise, features, T_gen, n_features_ge
 
     width = 0.4  # Width of the bars
     indices = np.arange(len(features))  # Create indices for the x position
-    indices1 = np.concatenate((np.arange(1,len(features),2)[::-1], np.arange(0,len(features),2)))
-    print(np.array(features)[indices1])
+    # indices1 = np.concatenate((np.arange(1,len(features),2)[::-1], np.arange(0,len(features),2)))
 
     data = list(zip(features, p_values))
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
-    axes[0].bar(indices - width/2, np.array(means_gen)[indices1], width=width, label='Generated', alpha=0.85)  # Adjust x position for 'Generated' bars
-    axes[0].bar(indices + width/2, np.array(means_real)[indices1], width=width, label='Real', alpha=0.85)  # Adjust x position for 'Real' bars
+    axes[0].bar(indices - width/2, np.array(means_gen)[indices], width=width, label='Generated', alpha=0.85)  # Adjust x position for 'Generated' bars
+    axes[0].bar(indices + width/2, np.array(means_real)[indices], width=width, label='Real', alpha=0.85)  # Adjust x position for 'Real' bars
     axes[0].set_title(f'Average_LOB_shape_{epoch}')
     axes[0].set_xlabel('Levels')
     axes[0].set_xticks(indices)  # Set the x-tick labels to your features
-    axes[0].set_xticklabels(np.array(features)[indices1], rotation=60)  # Rotate the x-tick labels by 90 degrees
+    axes[0].set_xticklabels(np.array(features)[indices], rotation=60)  # Rotate the x-tick labels by 90 degrees
     axes[0].legend()
     # Remove axes
     axes[1].axis('tight')
@@ -750,6 +745,51 @@ def plot_samples(dataset, generator_model, noise, features, T_gen, n_features_ge
     plt.savefig(f'{path}/6_correlation_matrix_{epoch}.png')
     plt.close()
     
+    return None
+
+def bar_plot_levels(stock, date, c=10):
+    condition_train = np.load(f'../data/{stock}_{date}/miscellaneous/condition_train_MSFT_2_day1_orderbook.npy')
+    input_train = np.load(f'../data/{stock}_{date}/miscellaneous/input_train_MSFT_2_day1_orderbook.npy')
+    levels = condition_train.shape[2]//2
+    values_bid, counts_bid = [], []
+    values_ask, counts_ask = [], []
+    for i in range(levels):
+        bid = np.array([x**2 * math.copysign(1, x)*c for x in condition_train[:,:, i]]).flatten()
+        ask = np.array([x**2 * math.copysign(1, x)*c for x in condition_train[:,:, i+levels]]).flatten()
+        vb, cb = np.unique(bid, return_counts=True)
+        values_bid.append(vb)
+        counts_bid.append(cb)
+        va, ca = np.unique(ask, return_counts=True)
+        values_ask.append(va)
+        counts_ask.append(ca)
+    fig, axes = plt.subplots(2, levels, figsize=(10, 10), tight_layout=True)
+    for i in range(levels):
+        axes[0,i].bar(values_bid[i], counts_bid[i], width=10, color='green', alpha=0.7)
+        axes[0,i].set_title(f'Bid Volume {levels-i}')
+        axes[1,i].bar(values_ask[-i], counts_ask[-i], width=10, color='red', alpha=0.7)
+        axes[1,i].set_title(f'Ask Volume {levels-i}')
+    fig.suptitle(r'$s_t$')
+    fig.savefig(f'plots/bar_plot_t.png')
+    
+    values_bid, counts_bid = [], []
+    values_ask, counts_ask = [], []
+    for i in range(levels):
+        bid = np.array([x**2 * math.copysign(1, x)*c for x in input_train[:,:, i]]).flatten()
+        ask = np.array([x**2 * math.copysign(1, x)*c for x in input_train[:,:, i+levels]]).flatten()
+        vb, cb = np.unique(bid, return_counts=True)
+        values_bid.append(vb)
+        counts_bid.append(cb)
+        va, ca = np.unique(ask, return_counts=True)
+        values_ask.append(va)
+        counts_ask.append(ca)
+    fig1, axes1 = plt.subplots(2, levels, figsize=(10, 10), tight_layout=True)
+    for i in range(levels):
+        axes1[0,i].bar(values_bid[i], counts_bid[i], width=10, color='green', alpha=0.7)
+        axes1[0,i].set_title(f'Level {levels-i}')
+        axes1[1,i].bar(values_ask[-i], counts_ask[-i], width=10, color='red', alpha=0.7)
+        axes1[1,i].set_title(f'Level {levels-i}')
+    fig1.suptitle(r'$s_{t+1}$')
+    fig1.savefig(f'plots/bar_plot_tp1.png')
     return None
 
 def correlation_matrix(dataset, generator_model, noise, T_gen, n_features_gen, job_id, bootstrap_iterations=10000):
@@ -1202,6 +1242,9 @@ if __name__ == "__main__":
     # Load the data
     stock = 'MSFT'
     date = '2018-04-01_2018-04-30_5'
+
+    bar_plot_levels(stock, date, c=10)
+    exit()
     
     dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
     orderbook_df_paths = [path for path in dataframes_paths if 'orderbook' in path]

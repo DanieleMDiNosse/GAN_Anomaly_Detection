@@ -90,10 +90,22 @@ if __name__ == '__main__':
     os.mkdir(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Model architecture plots, metrics plots
     os.mkdir(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Generated samples
     os.mkdir(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Models
-    
+   
+    dataframes_folder_path = f'../data/{stock}_{date}'
+    # Check if the extensions of the files are .csv or .parquet
+    paths = os.listdir(dataframes_folder_path)
+    for path in paths:
+        if path.endswith('.csv'):
+            logging.info('\n[Data] ---------- PREPROCESSING ----------')
+            logging.info('Converting the orderbook csv files into parquet dataframes...')
+            convert_and_renamecols(f'{dataframes_folder_path}/{path}')
+            logging.info('[Data] ---------- DONE ----------\n')
+
     # Create the orderbook dataframe
+    logging.info('\n[Data] ---------- CREATING ORDERBOOK SNAPSHOTS ----------')
     orderbook_df, prices_change = create_LOB_snapshots(N, depth, previous_days=False)
-    exit()
+    logging.info(f'Orderbook input dataframe shape:\n\t{orderbook_df.shape}')
+    logging.info('[Data] ---------- DONE ----------\n')
 
     # Define the parameters of the GAN. Some of them are set via argparse
     T_condition = args.T_condition
@@ -112,57 +124,39 @@ if __name__ == '__main__':
     patience_counter = 0
     patience = 200
 
-    num_pieces = 5
-    if not os.path.exists(f'../data/input_train_{stock}_{window_size}_day{N}_orderbook.npy'):
-        logging.info('\n[Input] ---------- PREPROCESSING ----------')
-
-        data_input = orderbook_df.values
-        # Divide input data into overlapping pieces
-        sub_data, length = divide_into_overlapping_pieces(data_input, window_size, num_pieces)
-
-        if sub_data[-1].shape[0] < window_size:     
-            raise ValueError(f'The last piece has shape {sub_data[-1].shape} and it is smaller than the window size {window_size}.')
-
-        logging.info(f'Number of windows: {length}')
-
-        # Create a memmap to store the scaled data.
-        final_shape = (length-num_pieces*(window_size-1), window_size, n_features_input)
-        fp = np.memmap("final_data.dat", dtype='float32', mode='w+', shape=final_shape)
-
-        start_idx = 0
-        logging.info(f'\nStart scaling the data...')
-        for piece_idx, data in enumerate(sub_data):
-            logging.info(f'\t{piece_idx+1}/{num_pieces}')
-            windows = np.array(divide_into_windows(data, window_size))
-            logging.info(f'\twindows shape: {windows.shape}')
-            end_idx = start_idx + windows.shape[0]
-            fp[start_idx:end_idx] = windows
-            start_idx = end_idx
-            del windows  # Explicit deletion
-        logging.info('Done.')
-
-        np.save(f'normal_data_{N}.npy', fp)
+    if not os.path.exists(f'../data/input_train_{stock}_{window_size}_day{N}_orderbook_.npy'):
+        logging.info('\n[Input&Condition] ---------- CREATING INPUT AND CONDITION ----------')
 
         logging.info('\nDividing each window into condition and input...')
-        condition_train, input_train = fp[:, :T_condition, :], fp[:, T_condition:, :n_features_gen]
-        logging.info('Done.')
-
+        condition_train = np.zeros((orderbook_df.shape[0]//2, T_condition, n_features_input))
+        input_train = np.zeros((orderbook_df.shape[0]//2, T_gen, n_features_input))
+        for i in range(0, condition_train.shape[0]):
+            condition_train[i, :, :] = orderbook_df.iloc[2*i, :].values
+            input_train[i, :, :] = orderbook_df.iloc[2*i+1, :].values
         logging.info(f'input_train shape:\n\t{input_train.shape}')
         logging.info(f'condition_train shape:\n\t{condition_train.shape}')
-
-        logging.info('\nSave the files...')
-        np.save(f'../data/condition_train_{stock}_{window_size}_day{N}_orderbook.npy', condition_train)
-        np.save(f'../data/input_train_{stock}_{window_size}_day{N}_orderbook.npy', input_train)
         logging.info('Done.')
 
-        logging.info('\n[Input] ---------- DONE ----------')
+        logging.info('\nSave the files...')
+        np.save(f'../data/{stock}_{date}/miscellaneous/condition_train_{stock}_{window_size}_day{N}_orderbook.npy', condition_train)
+        np.save(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_day{N}_orderbook.npy', input_train)
+        logging.info('Done.')
+
+        logging.info('\n[Input&Condtion] ---------- DONE ----------')
     else:
-        logging.info('Loading input_train, input_validation and input_test sets...')
-        input_train = np.load(f'../data/input_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
-        condition_train = np.load(f'../data/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
+        logging.info('Loading input_train and condition_train...')
+        input_train = np.load(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
+        condition_train = np.load(f'../data/{stock}_{date}/miscellaneous/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
         
         logging.info(f'input_train shape:\n\t{input_train.shape}')
         logging.info(f'condition_train shape:\n\t{condition_train.shape}')
+        logging.info('Done.')
+    
+    # Create bar plots showing the empirical distribution of the LOB snapshots at time t and t+1
+    logging.info('Creating bar plots showing the empirical distribution of the LOB snapshots at time t and t+1...')
+    bar_plot_levels(stock, date, c=10)
+    logging.info('Done.')
+    exit()
 
     logging.info(f"\nHYPERPARAMETERS:\n"
                     f"\tstock: {stock}\n"
@@ -222,6 +216,7 @@ if __name__ == '__main__':
     # Initialize a list to store the mean over all the features of the wasserstein distances at each epoch
     wass_to_plot = []
     for epoch in range(n_epochs):
+        if epoch % 10 == 0: logging.info(f'Epoch {epoch}')
         j = 0
         W_batch = [] # W_batch will have num_batches elements
         noises = [[] for _ in range(num_batches)] # noises will have num_batches elements. Each elements is a list containing the noises used for each batch in that epoch by the genereator
@@ -243,18 +238,19 @@ if __name__ == '__main__':
         wass_to_plot.append(overall_W_mean)
         logging.info(f'Wasserstein distance: {overall_W_mean}')
 
-        if epoch % 150 == 0:
+        if epoch % 100 == 0 and epoch > 0:
             logging.info('Creating a time series with the generated samples...')
-            features = orderbook_df.columns[:n_features_gen]
+            features = orderbook_df.columns
             plot_samples(dataset_train, generator_model, noises, features, T_gen, n_features_gen, job_id, epoch, args)
+            logging.info('Done.')
 
             logging.info('Saving the models...')
             generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.h5')
             discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.h5')
             logging.info('Done')
 
-        logging.info('Check Early Stopping Criteria...')
         if epoch > 2500:
+            logging.info('Check Early Stopping Criteria...')
             if overall_W_mean + 5e-4 < best_wass_dist:
                 logging.info(f'Wasserstein distance improved from {best_wass_dist} to {overall_W_mean}')
                 best_wass_dist = overall_W_mean
