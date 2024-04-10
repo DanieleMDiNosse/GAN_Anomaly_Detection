@@ -8,7 +8,7 @@ from data_utils import *
 from sklearn.preprocessing import StandardScaler
 import argparse
 import logging
-from tensorflow.keras.utils import plot_model
+# from tensorflow.keras.utils import plot_model
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 from tensorflow.keras import layers
