@@ -3,16 +3,23 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import os
+import logging
+import subprocess
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import tensorflow as tf
 from data_utils import *
 from sklearn.preprocessing import StandardScaler
 import argparse
-import logging
 # from tensorflow.keras.utils import plot_model
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 from tensorflow.keras import layers
 from tensorflow.keras.models import Model
+
+def get_gpu_memory():
+    '''Function to get the GPU memory usage. It returns the free memory in MB.'''
+    result = subprocess.run(['nvidia-smi', '--query-gpu=memory.free', '--format=csv,nounits,noheader'], capture_output=True, text=True)
+    return result.stdout.strip()
 
 def conv_block(xi, filters, kernel_size, strides, padding, skip_connections):
     x = layers.Conv2D(filters=filters, kernel_size=kernel_size, strides=strides, padding=padding)(xi)
@@ -170,6 +177,7 @@ def train_step(real_samples, condition, generator_model, discriminator_model, fe
             if loss == 'original':
                 discriminator_loss = compute_discriminator_loss(real_output, fake_output)
             elif loss == 'wasserstein':
+                # The critic in a WGAN is trained to output higher scores for real data and lower scores for generated data
                 discriminator_loss = wasserstein_loss([real_output, fake_output])
                 gp = gradient_penalty(discriminator_model, batch_size, real_samples, generated_samples, condition)
                 discriminator_loss = discriminator_loss + 10.0 * gp
@@ -290,6 +298,7 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
 
     plt.close('all')
     return None
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(

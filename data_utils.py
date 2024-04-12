@@ -7,6 +7,8 @@ import os
 import argparse
 import logging
 import numba as nb
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import tensorflow as tf
 from PIL import ImageDraw
 from statsmodels.tsa.ar_model import AutoReg
@@ -16,7 +18,7 @@ import math
 from sklearn.decomposition import PCA
 import seaborn as sns
 
-def convert_and_renamecols(path):
+def convert_and_renamecols(dataframes_folder_path):
     '''This function takes as input the path of the folder containing the dataframes and renames the columns
     of the message and orderbook dataframes. Then, it saves the dataframes in the same folder as a parquet
     dataframe.
@@ -31,42 +33,43 @@ def convert_and_renamecols(path):
     None.'''
 
     # # Read the message dataframes
-    # dataframes_paths = os.listdir(f'{dataframes_folder_path}/')
-    # dataframes_paths.sort()
-    # for path in dataframes_paths:
-    logging.info(path)
-    if path.endswith('.csv'): 
-        logging.info(f'Found csv dataframe for {path}...')
-        data = pd.read_csv(f'{path}')
-    if path.endswith('.pkl'): 
-        logging.info(f'Found pkl dataframe for {path}...')
-        data = pd.read_pickle(f'{path}')
-    if path.endswith('.parquet'): 
-        logging.info(f'Found parquet dataframe for {path}...')
-        data = pd.read_parquet(f'{path}')
+    dataframes_paths = os.listdir(f'{dataframes_folder_path}')
+    dataframes_paths.sort()
+    for df in dataframes_paths:
+        path = f'{dataframes_folder_path}/{df}'
+        logging.info(path)
+        if path.endswith('.csv'): 
+            logging.info(f'Found csv dataframe for {path}...')
+            data = pd.read_csv(f'{path}')
+        if path.endswith('.pkl'): 
+            logging.info(f'Found pkl dataframe for {path}...')
+            data = pd.read_pickle(f'{path}')
+        if path.endswith('.parquet'): 
+            logging.info(f'Found parquet dataframe for {path}...')
+            data = pd.read_parquet(f'{path}')
 
-    # Rename the columns
-    if 'message' in path:
-        # if len(data.columns) > 6: eliminate the last column
-        if len(data.columns) > 6: 
-            data = data.drop(columns = data.columns[-1])
-        data.columns = ['Time', 'Event type', 'Order ID', 'Size', 'Price', 'Direction']
-    elif 'orderbook' in path:
-        n = data.shape[1]
-        ask_price_columns = [f'Ask price {i}' for i,j in zip(range(0, int(n/2)), range(0,n,4))]
-        ask_size_columns = [f'Ask size {i}' for i,j in zip(range(0, int(n/2)), range(1,n,4))]
-        bid_price_columns = [f'Bid price {i}' for i,j in zip(range(0, int(n/2)), range(2,n,4))]
-        bid_size_columns = [f'Bid size {i}' for i,j in zip(range(0, int(n/2)), range(3,n,4))]
-        ask_columns = [[ask_price_columns[i], ask_size_columns[i]] for i in range(len(ask_size_columns))]
-        bid_columns = [[bid_price_columns[i], bid_size_columns[i]] for i in range(len(bid_size_columns))]
-        columns = np.array([[ask_columns[i], bid_columns[i]] for i in range(len(ask_size_columns))]).flatten()
-        data.columns = columns
+        # Rename the columns
+        if 'message' in path:
+            # if len(data.columns) > 6: eliminate the last column
+            if len(data.columns) > 6: 
+                data = data.drop(columns = data.columns[-1])
+            data.columns = ['Time', 'Event type', 'Order ID', 'Size', 'Price', 'Direction']
+        elif 'orderbook' in path:
+            n = data.shape[1]
+            ask_price_columns = [f'Ask price {i}' for i,j in zip(range(0, int(n/2)), range(0,n,4))]
+            ask_size_columns = [f'Ask size {i}' for i,j in zip(range(0, int(n/2)), range(1,n,4))]
+            bid_price_columns = [f'Bid price {i}' for i,j in zip(range(0, int(n/2)), range(2,n,4))]
+            bid_size_columns = [f'Bid size {i}' for i,j in zip(range(0, int(n/2)), range(3,n,4))]
+            ask_columns = [[ask_price_columns[i], ask_size_columns[i]] for i in range(len(ask_size_columns))]
+            bid_columns = [[bid_price_columns[i], bid_size_columns[i]] for i in range(len(bid_size_columns))]
+            columns = np.array([[ask_columns[i], bid_columns[i]] for i in range(len(ask_size_columns))]).flatten()
+            data.columns = columns
 
-    # Save the dataframe
-    name = f"{path.split('/')[3].split('.')[0]}.parquet"
-    folder = path.split('/')[2]
-    logging.info(name)
-    data.to_parquet(f'../data/{folder}/{name}')
+        # Save the dataframe
+        name = f"{path.split('/')[-1].split('.')[0]}.parquet"
+        folder = path.split('/')[-2]
+        logging.info(name)
+        data.to_parquet(f'../data/{folder}/{name}')
     return None
 
 def preprocessing_orderbook_df(orderbook, message, sampling_seconds=10, discard_time=1800):
@@ -326,9 +329,12 @@ def LOB_snapshots(orderbook, k, m, n):
 def compute_spread(orderbook):
     '''This function computes the spread of the orderbook dataframe.'''
     spread = orderbook['Ask price 0'] - orderbook['Bid price 0']
+    values, counts = np.unique(spread, return_counts=True)
+    for i in range(len(values)):
+        logging.info(f'Spread {values[i]} has {counts[i]} occurrences.\n')
     return spread
 
-def create_LOB_snapshots(N, depth, previous_days=False):
+def create_LOB_snapshots(stock, date, N, depth, previous_days=False):
     """
     This function creates the LOB snapshots dataframe with the following features:
 
@@ -353,14 +359,9 @@ def create_LOB_snapshots(N, depth, previous_days=False):
         Dataframe containing the orderbook data with the specified features.
     """
 
-    # Load data parameters
-    stock = 'MSFT'
-    date = '2018-04-01_2018-04-30_5'
-
     # Read the dataframes
     dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
     orderbook_df_paths = [path for path in dataframes_paths if 'orderbook' in path]
-    logging.info(orderbook_df_paths)
     orderbook_df_paths.sort()
     message_df_paths = [path for path in dataframes_paths if 'message' in path]
     message_df_paths.sort()
@@ -401,7 +402,7 @@ def create_LOB_snapshots(N, depth, previous_days=False):
     # snapshots_df['spread'] = spread
 
     # Normalize the data
-    snapshots_df = snapshots_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
+    snapshots_df = snapshots_df.map(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
 
     # Save the dataframe
     snapshots_df.to_parquet(f'../data/{stock}_{date}/miscellaneous/snapshots_df_{N}.parquet')
@@ -643,7 +644,6 @@ def plot_samples(dataset, generator_model, noise, features, T_gen, n_features_ge
     None.
 
     '''
-
     # Create two lists to store the generated and real samples. 
     # These list will be of shape (batch_size*number_of_batches_plot, T_gen, n_features_gen)
     generated_samples = []
@@ -651,7 +651,11 @@ def plot_samples(dataset, generator_model, noise, features, T_gen, n_features_ge
 
     k = 0
     for batch_condition, batch in dataset:
+        # logging.info(f'LOB at t:\n{batch_condition}\n')
+        # logging.info(f'LOB at t+1:\n{batch}\n')
         gen_sample = generator_model([noise[k], batch_condition])
+        # logging.info(f'Generated LOB at t+1:\n{gen_sample}\n')
+        # logging.info('-----------------------------------------------------------------')
         gen_sample = transform_and_reshape(gen_sample, T_gen, n_features_gen)
         batch = transform_and_reshape(batch, T_gen, n_features_gen)
         for i in range(gen_sample.shape[0]):
@@ -664,12 +668,16 @@ def plot_samples(dataset, generator_model, noise, features, T_gen, n_features_ge
     real_samples = np.array(real_samples)
     
     means_real, means_gen, p_values = [], [], []
+    # Distribution of the generated samples
     fig, axes = plt.subplots(n_features_gen, 1, figsize=(10, 10), tight_layout=True)
+    # Time series sample
     fig1, axes1 = plt.subplots(n_features_gen, 1, figsize=(10, 10), tight_layout=True)
+
     for i, feature in enumerate(features):
         d_gen = np.round(generated_samples[:, i].flatten())
         d_real = real_samples[:, i].flatten()
         _, p_value = ttest_ind(d_gen, d_real, equal_var=False)
+        # Compute the means for the average LOB shape
         means_real.append(np.mean(d_real))
         means_gen.append(np.mean(d_gen))
         p_values.append(p_value)
@@ -748,8 +756,8 @@ def plot_samples(dataset, generator_model, noise, features, T_gen, n_features_ge
     return None
 
 def bar_plot_levels(stock, date, c=10):
-    condition_train = np.load(f'../data/{stock}_{date}/miscellaneous/condition_train_MSFT_2_day1_orderbook.npy')
-    input_train = np.load(f'../data/{stock}_{date}/miscellaneous/input_train_MSFT_2_day1_orderbook.npy')
+    condition_train = np.load(f'../data/{stock}_{date}/miscellaneous/condition_train_{stock}_2_day1_orderbook.npy')
+    input_train = np.load(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_2_day1_orderbook.npy')
     levels = condition_train.shape[2]//2
     values_bid, counts_bid = [], []
     values_ask, counts_ask = [], []
@@ -757,12 +765,15 @@ def bar_plot_levels(stock, date, c=10):
         bid = np.array([x**2 * math.copysign(1, x)*c for x in condition_train[:,:, i]]).flatten()
         ask = np.array([x**2 * math.copysign(1, x)*c for x in condition_train[:,:, i+levels]]).flatten()
         vb, cb = np.unique(bid, return_counts=True)
+        if np.all(vb > 0):
+            logging.info(f'✗ Some bid volumes at level {i} are positive at time t!')
         values_bid.append(vb)
         counts_bid.append(cb)
         va, ca = np.unique(ask, return_counts=True)
         values_ask.append(va)
         counts_ask.append(ca)
-    fig, axes = plt.subplots(2, levels, figsize=(10, 10), tight_layout=True)
+
+    fig, axes = plt.subplots(2, levels, figsize=(15, 8), tight_layout=True)
     for i in range(levels):
         axes[0,i].bar(values_bid[i], counts_bid[i], width=10, color='green', alpha=0.7)
         axes[0,i].set_title(f'Bid Volume {levels-i}')
@@ -782,7 +793,7 @@ def bar_plot_levels(stock, date, c=10):
         va, ca = np.unique(ask, return_counts=True)
         values_ask.append(va)
         counts_ask.append(ca)
-    fig1, axes1 = plt.subplots(2, levels, figsize=(10, 10), tight_layout=True)
+    fig1, axes1 = plt.subplots(2, levels, figsize=(15, 8), tight_layout=True)
     for i in range(levels):
         axes1[0,i].bar(values_bid[i], counts_bid[i], width=10, color='green', alpha=0.7)
         axes1[0,i].set_title(f'Level {levels-i}')

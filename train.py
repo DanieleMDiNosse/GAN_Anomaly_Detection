@@ -4,9 +4,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
-import tensorflow as tf
-# Change the environment variable TF_CPP_MIN_LOG_LEVEL to 2 to avoid the orderbooks about the compilation of the CUDA code
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 from data_utils import *
 import argparse
 import logging
@@ -16,6 +13,10 @@ import math
 import gc
 from scipy.stats import wasserstein_distance
 import sys
+# Change the environment variable TF_CPP_MIN_LOG_LEVEL to 3 to log only errors of tf
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
+import tensorflow as tf
 
 
 if __name__ == '__main__':
@@ -23,6 +24,8 @@ if __name__ == '__main__':
         description='''Main script used to train the GAN.''')
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
+    parser.add_argument('-s', '--stock', type=str, help='Stock to consider')
+    parser.add_argument('-dt', '--date', type=str, help='Date in the folder name')
     parser.add_argument('-N', '--N_days', type=int, help='Number of the day to consider')
     parser.add_argument('-d', '--depth', help='Depth of the orderbook', type=int)
     parser.add_argument('-bs', '--batch_size', help='Batch size', type=int)
@@ -43,15 +46,21 @@ if __name__ == '__main__':
               'warning': logging.WARNING,
               'info': logging.INFO,
               'debug': logging.DEBUG}
+    
+    # Print the current date and time
+    current_datetime = pd.Timestamp.now()
+    formatted_datetime = current_datetime.strftime("%Y-%m-%d_%H-%M-%S")
+    job_id = formatted_datetime
 
-    if os.getenv("PBS_JOBID") != None:
-        job_id = os.getenv("PBS_JOBID")
-    else:
-        job_id = os.getpid()
+    # if os.getenv("PBS_JOBID") != None:
+    #     job_id = os.getenv("PBS_JOBID")
+    # else:
+    #     job_id = os.getpid()
 
     if not os.path.exists('logs'):
         os.mkdir('logs')
     logging.basicConfig(filename=f'logs/train_{job_id}.log', format='%(message)s', level=levels[args.log])
+    logging.info(f"Current Date and Time:\n\t {formatted_datetime}")
 
     logger = tf.get_logger()
     logger.setLevel('ERROR')
@@ -59,17 +68,17 @@ if __name__ == '__main__':
     # Set the seed for TensorFlow to the number of the beast
     tf.random.set_seed(666)
 
-    # Print the current date and time
-    current_datetime = pd.Timestamp.now()
-    formatted_datetime = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
-    logging.info(f"Current Date and Time:\n\t {formatted_datetime}")
+    # # Print the current date and time
+    # current_datetime = pd.Timestamp.now()
+    # formatted_datetime = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
+    # logging.info(f"Current Date and Time:\n\t {formatted_datetime}")
 
     # Enable device placement logging
     tf.debugging.set_log_device_placement(True)
    
     # Define data parameters
-    stock = 'MSFT'
-    date = '2018-04-01_2018-04-30_5'
+    stock = args.stock
+    date = args.date
     N = args.N_days
     depth = args.depth
 
@@ -103,7 +112,7 @@ if __name__ == '__main__':
 
     # Create the orderbook dataframe
     logging.info('\n[Data] ---------- CREATING ORDERBOOK SNAPSHOTS ----------')
-    orderbook_df, prices_change = create_LOB_snapshots(N, depth, previous_days=False)
+    orderbook_df, prices_change = create_LOB_snapshots(stock, date, N, depth, previous_days=False)
     logging.info(f'Orderbook input dataframe shape:\n\t{orderbook_df.shape}')
     logging.info('[Data] ---------- DONE ----------\n')
 
@@ -126,7 +135,6 @@ if __name__ == '__main__':
 
     if not os.path.exists(f'../data/input_train_{stock}_{window_size}_day{N}_orderbook_.npy'):
         logging.info('\n[Input&Condition] ---------- CREATING INPUT AND CONDITION ----------')
-
         logging.info('\nDividing each window into condition and input...')
         condition_train = np.zeros((orderbook_df.shape[0]//2, T_condition, n_features_input))
         input_train = np.zeros((orderbook_df.shape[0]//2, T_gen, n_features_input))
@@ -142,7 +150,7 @@ if __name__ == '__main__':
         np.save(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_day{N}_orderbook.npy', input_train)
         logging.info('Done.')
 
-        logging.info('\n[Input&Condtion] ---------- DONE ----------')
+        logging.info('\n[Input&Condtion] ---------- DONE ----------\n')
     else:
         logging.info('Loading input_train and condition_train...')
         input_train = np.load(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
@@ -156,7 +164,6 @@ if __name__ == '__main__':
     logging.info('Creating bar plots showing the empirical distribution of the LOB snapshots at time t and t+1...')
     bar_plot_levels(stock, date, c=10)
     logging.info('Done.')
-    exit()
 
     logging.info(f"\nHYPERPARAMETERS:\n"
                     f"\tstock: {stock}\n"
@@ -216,7 +223,10 @@ if __name__ == '__main__':
     # Initialize a list to store the mean over all the features of the wasserstein distances at each epoch
     wass_to_plot = []
     for epoch in range(n_epochs):
-        if epoch % 10 == 0: logging.info(f'Epoch {epoch}')
+        if epoch % 1 == 0:
+            # print(f'Epoch: {epoch}/{n_epochs}')
+            logging.info(f'Epoch: {epoch}/{n_epochs}')
+            logging.info(f'Free GPU VRAM: {get_gpu_memory()} MB')
         j = 0
         W_batch = [] # W_batch will have num_batches elements
         noises = [[] for _ in range(num_batches)] # noises will have num_batches elements. Each elements is a list containing the noises used for each batch in that epoch by the genereator
@@ -236,10 +246,10 @@ if __name__ == '__main__':
             W_batch.append(np.mean(np.array(W_features))) # averaged over the features
         overall_W_mean = np.mean(np.array(W_batch)) # averaged over the batches
         wass_to_plot.append(overall_W_mean)
-        logging.info(f'Wasserstein distance: {overall_W_mean}')
+        # logging.info(f'Wasserstein distance: {overall_W_mean}')
 
-        if epoch % 100 == 0 and epoch > 0:
-            logging.info('Creating a time series with the generated samples...')
+        if epoch % 25 == 0 and epoch > 0:
+            logging.info('Plotting generated samples...')
             features = orderbook_df.columns
             plot_samples(dataset_train, generator_model, noises, features, T_gen, n_features_gen, job_id, epoch, args)
             logging.info('Done.')
