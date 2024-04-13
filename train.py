@@ -7,11 +7,10 @@ import os
 from data_utils import *
 import argparse
 import logging
+import time
 # from tensorflow.keras.utils import plot_model
 from model_utils import *
-import math
 import gc
-from scipy.stats import wasserstein_distance
 import sys
 # Change the environment variable TF_CPP_MIN_LOG_LEVEL to 3 to log only errors of tf
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -220,50 +219,54 @@ if __name__ == '__main__':
     num_batches = len(dataset_train)
     logging.info(f'Number of batches:\n\t{num_batches}\n')
 
-    # Initialize a list to store the mean over all the features of the wasserstein distances at each epoch
-    wass_to_plot = []
     for epoch in range(n_epochs):
+        start = time.time()
         if epoch % 1 == 0:
-            # print(f'Epoch: {epoch}/{n_epochs}')
             logging.info(f'Epoch: {epoch}/{n_epochs}')
-            logging.info(f'Free GPU VRAM: {get_gpu_memory()} MB')
+
+        # Create the noise for the generator
+        noise_train = tf.random.normal([input_train.shape[0], T_gen*latent_dim, n_features_gen])
         j = 0
-        W_batch = [] # W_batch will have num_batches elements
-        noises = [[] for _ in range(num_batches)] # noises will have num_batches elements. Each elements is a list containing the noises used for each batch in that epoch by the genereator
         for batch_condition, batch_real_samples in dataset_train:
-            j += 1
             batch_size = batch_real_samples.shape[0]
-            generator_model, discriminator_model, generated_samples, noise = train_step(batch_real_samples, batch_condition, generator_model, discriminator_model, feature_extractor, optimizer, args.loss, T_gen, T_condition, latent_dim, batch_size, num_batches, j, job_id, epoch, metrics, args)
-            # Append the noise
-            noises[j-1] = noise
-            W_features = [] # W_features will have n_features_gen elements
-            for feature in range(n_features_gen): # Iteration over the features
-                W_samples = [] # W_samples will have batch_size elements
-                for i in range(generated_samples.shape[0]): # Iteration over the samples
-                    w = wasserstein_distance(batch_real_samples[i, :, feature], generated_samples[i, :, feature])
-                    W_samples.append(w)
-                W_features.append(np.mean(np.array(W_samples))) # averaged over the samples in a batch
-            W_batch.append(np.mean(np.array(W_features))) # averaged over the features
-        overall_W_mean = np.mean(np.array(W_batch)) # averaged over the batches
-        wass_to_plot.append(overall_W_mean)
-        # logging.info(f'Wasserstein distance: {overall_W_mean}')
+            gen_samples_train, real_output, fake_output, discriminator_loss, generator_loss = train_step(batch_real_samples, batch_condition, generator_model, noise_train, discriminator_model, feature_extractor, optimizer, args.loss, batch_size, j)
+            j += 1
+        logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
+
+        start = time.time()
+        # Summarize performance at each epoch
+        summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, metrics, job_id, args)
+        logging.info(f'Summarizing performance took {time.time()-start:.2f} seconds.')
+
+        if epoch % 10 == 0 and epoch > 0:
+            logging.info(f'Plotting the W1 distances at epoch {epoch}...')
+            W1_train = overall_wasserstein_distance(generator_model, dataset_train, noise_train)
+            noise_val = tf.random.normal([input_train.shape[0], T_gen*latent_dim, n_features_gen])
+            W1_val = overall_wasserstein_distance(generator_model, dataset_train, noise_val)
+            plt.figure(figsize=(10, 6), tight_layout=True)
+            plt.plot(W1_train, label='Train')
+            plt.plot(W1_val, label='Validation')
+            plt.xlabel('Epoch')
+            plt.ylabel('Wasserstein distance')
+            plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/1_wasserstein_distance.png')
+            logging.info('Done.')
 
         if epoch % 25 == 0 and epoch > 0:
-            logging.info('Plotting generated samples...')
+            logging.info(f'Plotting generated samples by the GAN at epoch {epoch}...')
             features = orderbook_df.columns
-            plot_samples(dataset_train, generator_model, noises, features, T_gen, n_features_gen, job_id, epoch, args)
+            plot_samples(dataset_train, generator_model, features, T_gen, n_features_gen, job_id, epoch, args)
             logging.info('Done.')
 
             logging.info('Saving the models...')
-            generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.h5')
-            discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.h5')
+            generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.keras')
+            discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.keras')
             logging.info('Done')
 
         if epoch > 2500:
             logging.info('Check Early Stopping Criteria...')
-            if overall_W_mean + 5e-4 < best_wass_dist:
-                logging.info(f'Wasserstein distance improved from {best_wass_dist} to {overall_W_mean}')
-                best_wass_dist = overall_W_mean
+            if W1_train + 5e-4 < best_wass_dist:
+                logging.info(f'Wasserstein distance improved from {best_wass_dist} to {W1_train}')
+                best_wass_dist = W1_train
                 best_gen_weights = generator_model.get_weights()
                 best_disc_weights = discriminator_model.get_weights()
                 patience_counter = 0
@@ -286,16 +289,22 @@ if __name__ == '__main__':
                 logging.info(f'Early stopping criterion not met. Patience counter:\n\t{patience_counter}')
         
         # Plot the wasserstein distance
-        plt.figure(figsize=(10, 6))
-        plt.plot(wass_to_plot)
-        plt.xlabel('Epoch')
-        plt.ylabel('Wasserstein distance')
-        plt.title(f'Mean over the features of the Wasserstein distances')
-        # add a vertical line at the best epoch
-        plt.axvline(x=epoch-patience_counter, color='r', linestyle='--', alpha=0.8, label=f'Best epoch: {epoch-patience_counter}')
-        plt.legend()
-        plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/0_wasserstein_distance.png')
-        plt.close()
+        # plt.figure(figsize=(10, 6))
+        # plt.plot(wass_to_plot)
+        # plt.xlabel('Epoch')
+        # plt.ylabel('Wasserstein distance')
+        # plt.title(f'Mean over the features of the Wasserstein distances')
+        # # add a vertical line at the best epoch
+        # plt.axvline(x=epoch-patience_counter, color='r', linestyle='--', alpha=0.8, label=f'Best epoch: {epoch-patience_counter}')
+        # plt.legend()
+        # plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/0_wasserstein_distance.png')
+        # plt.close()
+
+        # Memory management
+        log_gpu_memory()
+        log_memory_usage()
+        # free_memory()
+
         if patience_counter >= patience:
             break
     

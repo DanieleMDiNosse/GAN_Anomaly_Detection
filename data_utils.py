@@ -610,7 +610,7 @@ def transform_and_reshape(tensor, T_gen, n_features, c=10):
     tensor_flat = tf.reshape(tensor_flat, [-1, T_gen, n_features])
     return tensor_flat
 
-def plot_samples(dataset, generator_model, noise, features, T_gen, n_features_gen, job_id, epoch, args):
+def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_id, epoch, args):
     '''This function plots several metrics that track the training process of the GAN. Specifically, it plots:
     - The generated samples
     - The average LOB shape together with the p-values of the Welch's t-test
@@ -649,11 +649,11 @@ def plot_samples(dataset, generator_model, noise, features, T_gen, n_features_ge
     generated_samples = []
     real_samples = []
 
-    k = 0
     for batch_condition, batch in dataset:
+        noise = tf.random.normal([args.batch_size, T_gen*args.latent_dim, batch.shape[2]])
         # logging.info(f'LOB at t:\n{batch_condition}\n')
         # logging.info(f'LOB at t+1:\n{batch}\n')
-        gen_sample = generator_model([noise[k], batch_condition])
+        gen_sample = generator_model([noise, batch_condition])
         # logging.info(f'Generated LOB at t+1:\n{gen_sample}\n')
         # logging.info('-----------------------------------------------------------------')
         gen_sample = transform_and_reshape(gen_sample, T_gen, n_features_gen)

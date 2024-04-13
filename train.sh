@@ -6,16 +6,16 @@
 sleep 0.5
 stock=MU
 date=2016-05-01_2016-07-31
-type_gen=dense
-type_disc=dense
+type_gen=conv
+type_disc=conv
 n_layers_gen=3
 n_layers_disc=3
 N_days=1
 T_condition=1
 T_gen=1
-loss=wasserstein
+loss=original
 batch_size=32
-depth=3
+depth=2
 latent_dim=$(($depth*10))
 # skip_connectionis False if not passed, True if passed
 
