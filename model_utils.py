@@ -7,6 +7,7 @@ import os
 import logging
 import psutil
 import gc
+import time
 import subprocess
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
@@ -156,7 +157,7 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
     # plot_model(generator_model, to_file='gen.png', show_shapes=True, show_layer_names=True)
     return generator_model
 
-@tf.function
+# @tf.function
 def train_step(real_samples, condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, loss, batch_size, j):#, num_batches, j, job_id, epoch, metrics, args):
     discriminator_optimizer = optimizer[0]
     generator_optimizer = optimizer[1]
@@ -165,6 +166,7 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
         disc_step = 1
     elif loss == 'wasserstein':
         disc_step = 5
+
     # Create a GradientTape for the generator and the discriminator.
     # GrandietTape collects all the operations that are executed inside it.
     # Then this operations are used to compute the gradients of the loss function with 
@@ -180,10 +182,9 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
     # Step 5: Apply the gradients to the optimizer
 
     # Discriminator training
-    # noise = tf.random.normal([batch_size, T_gen*latent_dim, real_samples.shape[2]])
     for _ in range(disc_step):
         with tf.GradientTape() as disc_tape:
-            generated_samples = generator_model([noise[j*batch_size:(j+1)*batch_size], condition], training=True)
+            generated_samples = generator_model([noise, condition], training=True)
             real_output = discriminator_model([real_samples, condition], training=True)
             fake_output = discriminator_model([generated_samples, condition], training=True)
 
@@ -197,12 +198,12 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
 
         gradients_of_discriminator = disc_tape.gradient(discriminator_loss, discriminator_model.trainable_variables)
         # Clip the gradients to stabilize training
-        gradients_of_discriminator = [tf.clip_by_value(grad, -1.0, 1.0) for grad in gradients_of_discriminator]
+        gradients_of_discriminator = [tf.clip_by_value(grad, -0.01, 0.01) for grad in gradients_of_discriminator]
         discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator_model.trainable_variables))
 
     # Generator training
     with tf.GradientTape() as gen_tape:
-        generated_samples = generator_model([noise[j*batch_size:(j+1)*batch_size], condition], training=True)
+        generated_samples = generator_model([noise, condition], training=True)
         fake_output = discriminator_model([generated_samples, condition], training=True)
         real_features_list = feature_extractor([real_samples, condition])
         generated_features_list = feature_extractor([generated_samples, condition])
@@ -221,20 +222,20 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
     del gen_tape
     del disc_tape
 
-    return generated_samples, real_output, fake_output, discriminator_loss, generator_loss
+    return generated_samples, real_output, fake_output, discriminator_loss, generator_loss#, generator_model, discriminator_model
 
 def build_feature_extractor(discriminator, layer_indices):
     '''Build a feature extractor model from the discriminator model. This model will be used to compute the feature matching loss.'''
     outputs = [discriminator.layers[i].output for i in layer_indices]
     return tf.keras.Model(discriminator.input, outputs)
 
-@tf.function
+# @tf.function
 def compute_feature_matching_loss(real_features_list, generated_features_list):
     losses = [tf.reduce_mean(tf.square(real - generated))
               for real, generated in zip(real_features_list, generated_features_list)]
     return tf.reduce_mean(losses)  # Average over all the feature matching losses
 
-@tf.function
+# @tf.function
 def compute_discriminator_loss(real_output, fake_output):
     binary_crossentropy = tf.keras.losses.BinaryCrossentropy(from_logits=False)
     real_loss = binary_crossentropy(tf.ones_like(real_output), real_output)
@@ -242,11 +243,13 @@ def compute_discriminator_loss(real_output, fake_output):
     total_disc_loss = real_loss + fake_loss
     return total_disc_loss
 
+# @tf.function
 def compute_generator_loss(fake_output):
     binary_crossentropy = tf.keras.losses.BinaryCrossentropy(from_logits=False)
     # return -tf.reduce_mean(tf.math.log(fake_output + 1e-5))
     return binary_crossentropy(tf.ones_like(fake_output), fake_output)
 
+# @tf.function
 def wasserstein_loss(predictions):
     if len(predictions) == 2:
         real_output, fake_output = predictions
@@ -258,6 +261,7 @@ def wasserstein_loss(predictions):
         w_tot = -tf.reduce_mean(fake_output)
     return w_tot
 
+# @tf.function
 def gradient_penalty(discriminator_model, batch_size, real_samples, fake_samples, condition):
     # Get the interpolated samples
     alpha = tf.random.normal([batch_size, 1, 1], 0.0, 1.0)
@@ -307,23 +311,28 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
 
 def overall_wasserstein_distance(generator_model, dataset_train, noise):
     gen_samples = []
+    real_samples = []
     j = 0
 
+    # Generate all the samples
     for batch_condition, _ in dataset_train:
-        gen_sample = generator_model([noise[j*args.batch_size:(j+1)*args.batch_size], batch_condition])
+        batch_size = batch_condition.shape[0]
+        gen_sample = generator_model([noise[j*batch_size:(j+1)*batch_size], batch_condition])
         for i in range(gen_sample.shape[0]):
             # All the appended samples will be of shape (T_gen, n_features_gen)
-            gen_samples.append(gen_sample[i, -1, :]) # averaged over the samples in a batch
+            gen_samples.append(gen_sample[i, -1, :])
+            real_samples.append(batch_condition[i, -1, :])
 
-    n_features_gen = gen_samples.shape[2]
-    W_features = [] # W_features will have n_features_gen elements
-    for feature in range(n_features_gen): # Iteration over the features
-        W_samples = [] # W_samples will have batch_size elements
-        for i in range(gen_samples.shape[0]): # Iteration over the samples
-            w = wasserstein_distance(batch_real_samples[i, :, feature], gen_samples[i, :, feature])
-            W_samples.append(w)
-        W_features.append(np.mean(np.array(W_samples))) # averaged over the samples in a batch
-    overall_W_mean = np.mean(np.array(n_features_gen)) # averaged over the batches
+    gen_samples = np.array(gen_samples)
+    real_samples = np.array(real_samples)
+    n_features_gen = batch_condition.shape[2]
+    W_features = []
+    for feature in range(n_features_gen):
+        W_samples = []
+        w = wasserstein_distance(real_samples[:, feature], gen_samples[:, feature])
+        W_samples.append(w)
+    W_features.append(np.mean(np.array(W_samples)))
+    overall_W_mean = np.mean(np.array(W_features))
 
     return overall_W_mean
 
