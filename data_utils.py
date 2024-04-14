@@ -402,7 +402,7 @@ def create_LOB_snapshots(stock, date, N, depth, previous_days=False):
     # snapshots_df['spread'] = spread
 
     # Normalize the data
-    snapshots_df = snapshots_df.map(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
+    snapshots_df = snapshots_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
 
     # Save the dataframe
     snapshots_df.to_parquet(f'../data/{stock}_{date}/miscellaneous/snapshots_df_{N}.parquet')
@@ -650,7 +650,7 @@ def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_
     real_samples = []
 
     for batch_condition, batch in dataset:
-        noise = tf.random.normal([args.batch_size, T_gen*args.latent_dim, batch.shape[2]])
+        noise = tf.random.normal([batch_condition.shape[0], T_gen*args.latent_dim, batch.shape[2]])
         # logging.info(f'LOB at t:\n{batch_condition}\n')
         # logging.info(f'LOB at t+1:\n{batch}\n')
         gen_sample = generator_model([noise, batch_condition])
@@ -662,7 +662,6 @@ def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_
             # All the appended samples will be of shape (T_gen, n_features_gen)
             generated_samples.append(gen_sample[i, -1, :])
             real_samples.append(batch[i, -1, :])
-        k += 1
 
     generated_samples = np.array(generated_samples)
     real_samples = np.array(real_samples)

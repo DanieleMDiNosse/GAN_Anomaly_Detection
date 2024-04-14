@@ -6,8 +6,8 @@
 sleep 0.5
 stock=MU
 date=2016-05-01_2016-07-31
-type_gen=conv
-type_disc=conv
+type_gen=dense
+type_disc=dense
 n_layers_gen=3
 n_layers_disc=3
 N_days=1
