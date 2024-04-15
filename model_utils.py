@@ -92,11 +92,12 @@ def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, nu
         for i in range(n_layers):
             x = dense_block(x, units=n_nodes[i], skip_connections=skip_connections)
 
-    xi = layers.Flatten()(x)
-    x = layers.Dense(32)(xi)
-
+    x = layers.Flatten()(x)
+    
     if activate_condition == True:
         x = layers.Concatenate()([x, x_c])
+    
+    x = layers.Dense(32)(x)
 
     if loss == 'original':
         output = layers.Dense(1, activation='sigmoid')(x)
@@ -168,19 +169,19 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
     elif loss == 'wasserstein':
         disc_step = 5
 
-    # Create a GradientTape for the generator and the discriminator.
-    # GrandietTape collects all the operations that are executed inside it.
-    # Then this operations are used to compute the gradients of the loss function with 
-    # respect to the trainable variables. Remember that 'persistent=True' is needed
-    # iff you want to compute the gradients of the operations inside the tape more than once
-    # (for example wrt different losses)
+    '''Create a GradientTape for the generator and the discriminator.
+    GrandietTape collects all the operations that are executed inside it.
+    Then this operations are used to compute the gradients of the loss function with 
+    respect to the trainable variables. Remember that 'persistent=True' is needed
+    iff you want to compute the gradients of the operations inside the tape more than once
+    (for example wrt different losses)
 
-    # Steps:
-    # Step 1: Generate fake samples using generator
-    # Step 2: discriminator distinguishes real and fake samples
-    # Step 3: Compute the losses
-    # Step 4: Compute the gradients of the losses wrt the trainable variables
-    # Step 5: Apply the gradients to the optimizer
+    Steps:
+    Step 1: Generate fake samples using generator
+    Step 2: discriminator distinguishes real and fake samples
+    Step 3: Compute the losses
+    Step 4: Compute the gradients of the losses wrt the trainable variables
+    Step 5: Apply the gradients to the optimizer'''
 
     # Discriminator training
     for _ in range(disc_step):

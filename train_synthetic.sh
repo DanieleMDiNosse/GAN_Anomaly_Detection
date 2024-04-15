@@ -6,8 +6,8 @@
 sleep 0.5
 type_gen=dense
 type_disc=dense
-n_layers_gen=3
-n_layers_disc=3
+n_layers_gen=2
+n_layers_disc=2
 T_condition=1
 T_gen=1
 loss=original
