@@ -18,8 +18,9 @@ batch_size=32
 depth=2
 latent_dim=$(($depth*10))
 # skip_connectionis False if not passed, True if passed
+# synthetic (data) False if not passed, True if passed
 
-python train.py -s=$stock -dt=$date -N=$N_days -bs=$batch_size -d=$depth -ld=$latent_dim -tg=$type_gen -td=$type_disc -nlg=$n_layers_gen -nld=$n_layers_disc -ls=$loss -Tc=$T_condition -Tg=$T_gen --skip_connection 
+python train.py -s=$stock -dt=$date -N=$N_days -bs=$batch_size -d=$depth -ld=$latent_dim -tg=$type_gen -td=$type_disc -nlg=$n_layers_gen -nld=$n_layers_disc -ls=$loss -Tc=$T_condition -Tg=$T_gen --skip_connection --synthetic 
 
 
 

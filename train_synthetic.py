@@ -20,13 +20,9 @@ import tensorflow as tf
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='''Main script used to train the GAN.''')
+        description='''Main script used to train the GAN on synthetic data.''')
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
-    parser.add_argument('-s', '--stock', type=str, help='Stock to consider')
-    parser.add_argument('-dt', '--date', type=str, help='Date in the folder name')
-    parser.add_argument('-N', '--N_days', type=int, help='Number of the day to consider')
-    parser.add_argument('-d', '--depth', help='Depth of the orderbook', type=int)
     parser.add_argument('-bs', '--batch_size', help='Batch size', type=int)
     parser.add_argument('-ld', '--latent_dim', help='Latent dimension', type=int)
     parser.add_argument('-nlg', '--n_layers_gen', help='Number of generator layers', type=int)
@@ -37,7 +33,6 @@ if __name__ == '__main__':
     parser.add_argument('-Tc', '--T_condition', help='Number of time steps to condition on', type=int, default=2)
     parser.add_argument('-Tg', '--T_gen', help='Number of time steps to generate', type=int, default=1)
     parser.add_argument('-ls', '--loss', help='Loss function (original, wasserstein)', type=str, default='original')
-    parser.add_argument('-lo', '--load', help='Load a model. The job_id must be provided', type=int, default=0)
     parser.add_argument('-sy', '--synthetic', action='store_true', help='Pass it if your data is synthetic.')
 
     args = parser.parse_args()
@@ -52,11 +47,6 @@ if __name__ == '__main__':
     formatted_datetime = current_datetime.strftime("%Y-%m-%d_%H-%M-%S")
     job_id = formatted_datetime
 
-    # if os.getenv("PBS_JOBID") != None:
-    #     job_id = os.getenv("PBS_JOBID")
-    # else:
-    #     job_id = os.getpid()
-
     if not os.path.exists('logs'):
         os.mkdir('logs')
     logging.basicConfig(filename=f'logs/train_{job_id}.log', format='%(message)s', level=levels[args.log])
@@ -68,22 +58,8 @@ if __name__ == '__main__':
     # Set the seed for TensorFlow to the number of the beast
     tf.random.set_seed(666)
 
-    # # Print the current date and time
-    # current_datetime = pd.Timestamp.now()
-    # formatted_datetime = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
-    # logging.info(f"Current Date and Time:\n\t {formatted_datetime}")
-
     # Enable device placement logging
     tf.debugging.set_log_device_placement(True)
-   
-    # Define data parameters
-    stock = args.stock
-    date = args.date
-    N = args.N_days
-    depth = args.depth
-
-    logging.info(f'Stock:\n\t{stock}')
-    logging.info(f'Number of days:\n\t{N}')
 
     # Check the available GPUs
     physical_devices = tf.config.experimental.list_physical_devices('GPU')
@@ -100,31 +76,49 @@ if __name__ == '__main__':
     os.mkdir(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Generated samples
     os.mkdir(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Models
    
-    dataframes_folder_path = f'../data/{stock}_{date}'
-    # Check if the extensions of the files are .csv or .parquet
-    paths = os.listdir(dataframes_folder_path)
-    for path in paths:
-        if path.endswith('.csv'):
-            logging.info('\n[Data] ---------- PREPROCESSING ----------')
-            logging.info('Converting the orderbook csv files into parquet dataframes...')
-            convert_and_renamecols(f'{dataframes_folder_path}/{path}')
-            logging.info('[Data] -------------- DONE --------------\n')
-
-    # Create the orderbook dataframe
-    logging.info('\n[Data] ---------- CREATING ORDERBOOK SNAPSHOTS ----------')
-    orderbook_df, prices_change = create_LOB_snapshots(stock, date, N, depth, previous_days=False)
-    logging.info(f'Orderbook input dataframe shape:\n\t{orderbook_df.shape}')
+    # Create a synthetic dataset for testing purposes
+    logging.info('\n[Data] ---------- CREATING SYNTHETIC DATASET ----------')
+    normal_1 = np.random.normal(-2, 1, (2000))
+    normal_2 = np.random.normal(2, 2, (2000))
+    data1 = np.concatenate((normal_1, normal_2))
+    data2 = np.random.normal(-2, 1, (4000))
+    data = {'MixNormal': data1, 'Normal': data2}
+    data_df = pd.DataFrame(data)
+    logging.info(f'data_df shape:\n\t{data_df.shape}')
     logging.info('[Data] --------------- DONE ---------------\n')
 
     # Define the parameters of the GAN. Some of them are set via argparse
     T_condition = args.T_condition
     T_gen = args.T_gen
     window_size = T_condition + T_gen
-    n_features_input = orderbook_df.shape[1]
-    n_features_gen = 2*depth
+    n_features_input = data_df.shape[1]
+    n_features_gen = data_df.shape[1]
     latent_dim = args.latent_dim
     n_epochs = 5000
     batch_size = args.batch_size
+
+    condition_train = np.zeros((data_df.shape[0]//2, T_condition, data_df.shape[1]))
+    input_train = np.zeros((data_df.shape[0]//2, T_gen, data_df.shape[1]))
+
+    for i in range(0, condition_train.shape[0]):
+        condition_train[i, :, :] = (data_df.iloc[2*i, :].values)**2
+        input_train[i, :, :] = data_df.iloc[2*i+1, :].values
+    
+    # Plot condition and input
+    fig, axes = plt.subplots(2, 2, figsize=(10, 6), tight_layout=True)
+    axes[0, 0].hist(condition_train[:, 0, 0], bins=50, label='Condition MixNormal')
+    axes[0, 1].hist(condition_train[:, 0, 1], bins=50, label='Condition Normal')
+    axes[1, 0].hist(input_train[:, 0, 0], bins=50, label='Input MixNormal')
+    axes[1, 1].hist(input_train[:, 0, 1], bins=50, label='Input Normal')
+    axes[0, 0].legend()
+    axes[0, 1].legend()
+    axes[1, 0].legend()
+    axes[1, 1].legend()
+    plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/0_condition_input.png')
+    
+    logging.info(f'input_train shape:\n\t{input_train.shape}')
+    logging.info(f'condition_train shape:\n\t{condition_train.shape}')
+    
 
     # Define the parameters for the early stopping criterion
     best_gen_weights = None
@@ -133,65 +127,7 @@ if __name__ == '__main__':
     patience_counter = 0
     patience = 200
 
-    if not os.path.exists(f'../data/{stock}_{date}/input_train_{stock}_{window_size}_{N}days_orderbook.npy') and not args.synthetic:
-        logging.info('\n[Input&Condition] ---------- CREATING INPUT AND CONDITION ----------')
-        logging.info('\nDividing each window into condition and input...')
-        condition_train = np.zeros((orderbook_df.shape[0]//2, T_condition, n_features_input))
-        input_train = np.zeros((orderbook_df.shape[0]//2, T_gen, n_features_input))
-
-        for i in range(0, condition_train.shape[0]):
-            condition_train[i, :, :] = orderbook_df.iloc[2*i, :].values
-            input_train[i, :, :] = orderbook_df.iloc[2*i+1, :].values
-
-        logging.info(f'input_train shape:\n\t{input_train.shape}')
-        logging.info(f'condition_train shape:\n\t{condition_train.shape}')
-        logging.info('Done.')
-
-        logging.info('\nSave the files...')
-        np.save(f'../data/{stock}_{date}/miscellaneous/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', condition_train)
-        np.save(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_{N}days_orderbook.npy', input_train)
-        logging.info('Done.')
-        logging.info('\n[Input&Condtion] --------------- DONE ---------------\n')
-
-    elif os.path.exists(f'../data/{stock}_{date}/input_train_{stock}_{window_size}_{N}days_orderbook.npy') and not args.synthetic:
-        logging.info('Loading input_train and condition_train...')
-        input_train = np.load(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
-        condition_train = np.load(f'../data/{stock}_{date}/miscellaneous/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
-        
-        logging.info(f'input_train shape:\n\t{input_train.shape}')
-        logging.info(f'condition_train shape:\n\t{condition_train.shape}')
-        logging.info('Done.')
-
-    elif args.synthetic:
-        # Create a synthetic dataset for testing purposes
-        logging.info('\n[Data] ---------- CREATING SYNTHETIC DATASET ----------')
-        normal_1 = np.random.normal(-2, 1, (2000))
-        normal_2 = np.random.normal(2, 2, (2000))
-        data1 = np.concatenate((normal_1, normal_2))
-        data2 = np.random.normal(-2, 1, (4000))
-        data = {'data1': data1, 'data2': data2}
-        data_df = pd.DataFrame(data)
-        logging.info(f'data_df shape:\n\t{data_df.shape}')
-
-        condition_train = np.zeros((data_df.shape[0]//2, T_condition, data_df.shape[1]))
-        input_train = np.zeros((data_df.shape[0]//2, T_gen, data_df.shape[1]))
-
-        for i in range(0, condition_train.shape[0]):
-            condition_train[i, :, :] = data_df.iloc[2*i, :].values
-            input_train[i, :, :] = data_df.iloc[2*i+1, :].values
-        
-        logging.info(f'input_train shape:\n\t{input_train.shape}')
-        logging.info(f'condition_train shape:\n\t{condition_train.shape}')
-        logging.info('[Data] --------------- DONE ---------------\n')
-
-    # Create bar plots showing the empirical distribution of the LOB snapshots at time t and t+1
-    logging.info('Creating bar plots showing the empirical distribution of the LOB snapshots at time t and t+1...')
-    bar_plot_levels(stock, date, N, window_size, c=10)
-    logging.info('Done.')
-
     logging.info(f"\nHYPERPARAMETERS:\n"
-                    f"\tstock: {stock}\n"
-                    f"\tdepth: {depth}\n"
                     f"\tgenerator: {args.type_gen}\n"
                     f"\tdiscriminator: {args.type_disc}\n"
                     f"\tn_layers_gen: {args.n_layers_gen}\n"
@@ -200,33 +136,24 @@ if __name__ == '__main__':
                     f"\tlatent_dim per time: {latent_dim}\n"
                     f"\tn_features_input: {n_features_input}\n"
                     f"\tn_features_gen: {n_features_gen}\n"
-                    f"\tfeatures: {orderbook_df.columns}\n"
+                    f"\tfeatures: {data_df.columns}\n"
                     f"\tn_epochs: {n_epochs}\n"
                     f"\tT_condition: {T_condition}\n"
                     f"\tT_gen: {T_gen}\n"
                     f"\tbatch_size: {batch_size} (num_batches: {input_train.shape[0]//batch_size})\n"
                     f"\tloss: {args.loss}\n"
                     f"\tpatience: {patience}\n"
-                    f"\tjob_id: {job_id}\n"
-                    f"\tLoaded model: {None if args.load==0 else args.load}\n")
+                    f"\tjob_id: {job_id}\n")
 
     # Define the optimizers
     generator_optimizer = tf.keras.optimizers.Adam(learning_rate=0.00001)
     discriminator_optimizer = tf.keras.optimizers.Adam(learning_rate=0.00001)
     optimizer = [generator_optimizer, discriminator_optimizer]
 
-    if args.load == 0:
-        # Build the models
-        generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, True)
-        discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, True, args.loss)
-        feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
-    else:
-        prev_job_id = args.load
-        # Load the models
-        generator_model = tf.keras.models.load_model(f'models/{prev_job_id}.pbs01_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.h5')
-        discriminator_model = tf.keras.models.load_model(f'models/{prev_job_id}.pbs01_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.h5')
-        feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
-
+    # Build the models
+    generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, True)
+    discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, True, args.loss)
+    feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
 
     logging.info('\n[Model] ---------- MODEL SUMMARIES ----------')
     generator_model.summary(print_fn=logging.info)
@@ -285,7 +212,7 @@ if __name__ == '__main__':
 
         if epoch % 25 == 0 and epoch > 0:
             logging.info(f'Plotting generated samples by the GAN at epoch {epoch}...')
-            features = orderbook_df.columns
+            features = data_df.columns
             plot_samples(dataset_train, generator_model, features, T_gen, n_features_gen, job_id, epoch, args)
             logging.info('Done.')
 

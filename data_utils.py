@@ -656,8 +656,9 @@ def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_
         gen_sample = generator_model([noise, batch_condition])
         # logging.info(f'Generated LOB at t+1:\n{gen_sample}\n')
         # logging.info('-----------------------------------------------------------------')
-        gen_sample = transform_and_reshape(gen_sample, T_gen, n_features_gen)
-        batch = transform_and_reshape(batch, T_gen, n_features_gen)
+        if not args.synthetic:
+            gen_sample = transform_and_reshape(gen_sample, T_gen, n_features_gen)
+            batch = transform_and_reshape(batch, T_gen, n_features_gen)
         for i in range(gen_sample.shape[0]):
             # All the appended samples will be of shape (T_gen, n_features_gen)
             generated_samples.append(gen_sample[i, -1, :])
@@ -673,7 +674,10 @@ def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_
     fig1, axes1 = plt.subplots(n_features_gen, 1, figsize=(10, 10), tight_layout=True)
 
     for i, feature in enumerate(features):
-        d_gen = np.round(generated_samples[:, i].flatten())
+        if not args.synthetic:
+            d_gen = np.round(generated_samples[:, i].flatten())
+        else:
+            d_gen = generated_samples[:, i].flatten()
         d_real = real_samples[:, i].flatten()
         _, p_value = ttest_ind(d_gen, d_real, equal_var=False)
         # Compute the means for the average LOB shape
@@ -754,9 +758,9 @@ def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_
     
     return None
 
-def bar_plot_levels(stock, date, c=10):
-    condition_train = np.load(f'../data/{stock}_{date}/miscellaneous/condition_train_{stock}_2_day1_orderbook.npy')
-    input_train = np.load(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_2_day1_orderbook.npy')
+def bar_plot_levels(stock, date, N, window_size, c=10):
+    condition_train = np.load(f'../data/{stock}_{date}/miscellaneous/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
+    input_train = np.load(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
     levels = condition_train.shape[2]//2
     values_bid, counts_bid = [], []
     values_ask, counts_ask = [], []
@@ -779,7 +783,7 @@ def bar_plot_levels(stock, date, c=10):
         axes[1,i].bar(values_ask[-i], counts_ask[-i], width=10, color='red', alpha=0.7)
         axes[1,i].set_title(f'Ask Volume {levels-i}')
     fig.suptitle(r'$s_t$')
-    fig.savefig(f'plots/bar_plot_t.png')
+    fig.savefig(f'plots/bar_plot_t_{stock}_{N}days.png')
     
     values_bid, counts_bid = [], []
     values_ask, counts_ask = [], []
@@ -799,7 +803,7 @@ def bar_plot_levels(stock, date, c=10):
         axes1[1,i].bar(values_ask[-i], counts_ask[-i], width=10, color='red', alpha=0.7)
         axes1[1,i].set_title(f'Level {levels-i}')
     fig1.suptitle(r'$s_{t+1}$')
-    fig1.savefig(f'plots/bar_plot_tp1.png')
+    fig1.savefig(f'plots/bar_plot_tp1_{stock}_{N}days.png')
     return None
 
 def correlation_matrix(dataset, generator_model, noise, T_gen, n_features_gen, job_id, bootstrap_iterations=10000):
