@@ -16,7 +16,7 @@ from data_utils import *
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import wasserstein_distance
 import argparse
-from tensorflow.keras.utils import plot_model
+# from tensorflow.keras.utils import plot_model
 from tensorflow.keras import layers
 from tensorflow.keras.models import Model
 
@@ -46,10 +46,9 @@ def conv_block(xi, filters, kernel_size, strides, padding, skip_connections):
 def lstm_block(xi, units, skip_connections):
     x = layers.LSTM(units=units, return_sequences=True)(xi)
     x = layers.Dropout(0.2)(x)
-    x = layers.LSTM(units=units, return_sequences=True)(x)
-    xo = layers.BatchNormalization()(x)
+    # xo = layers.BatchNormalization()(x)
     if skip_connections == True:
-        x = layers.Concatenate()([xi, xo])
+        x = layers.Concatenate()([xi, x])
     return x
 
 def dense_block(xi, units, skip_connections):
@@ -64,14 +63,23 @@ def dense_block(xi, units, skip_connections):
 
 def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, num_features_input, num_features_gen, activate_condition=False, loss='original'):
     '''Build the discriminator model'''
-    # n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
-    n_nodes = [64, 48, 32]
+    n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
 
     if activate_condition == True:
         condition = layers.Input(shape=(T_condition, num_features_input), name='condition')
-        x_c = layers.Flatten()(condition)
-        for i in range(n_layers):
-            x_c = dense_block(x_c, units=n_nodes[i], skip_connections=skip_connections)
+        if type == 'dense':
+            x_c = layers.Flatten()(condition)
+            for i in range(n_layers):
+                x_c = dense_block(x_c, units=n_nodes[i], skip_connections=skip_connections)
+        if type == 'conv':
+            x_c = layers.Reshape((T_condition, T_condition, num_features_input))(condition)
+            for i in range(n_layers):
+                x_c = conv_block(x_c, filters=n_nodes[i], kernel_size=(3,num_features_input), strides=1, padding='same', skip_connections=skip_connections)
+        if type == 'lstm':
+            x_c = condition
+            for i in range(n_layers):
+                x_c = lstm_block(x_c, units=n_nodes[i], skip_connections=skip_connections)
+            x_c = layers.Flatten()(x_c)
     else:
         T_gen = T_gen + T_condition
 
@@ -83,8 +91,8 @@ def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, nu
             x = conv_block(x, filters=n_nodes[i], kernel_size=(3,num_features_gen), strides=1, padding='same', skip_connections=skip_connections)
 
     if type == 'lstm':
+        x = input
         for i in range(n_layers):
-            x = input
             x = lstm_block(x, units=n_nodes[i], skip_connections=skip_connections)
 
     if type == 'dense':
@@ -109,19 +117,29 @@ def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, nu
     else:
         discriminator = tf.keras.Model([input], output, name='discriminator')
     
-    plot_model(discriminator, to_file='models/discriminator_plot.png', show_shapes=True, show_layer_names=True)
+    # plot_model(discriminator, to_file='models/discriminator_plot.png', show_shapes=True, show_layer_names=True)
     return discriminator
 
 def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_features_input, num_features_gen, latent_dim, activate_condition=False):
     '''Build the generator model'''
-    # n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
-    n_nodes = [64, 48, 32]
+    n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
+    # n_nodes = [64, 48, 32]
 
     if activate_condition == True:
         condition = layers.Input(shape=(T_condition, num_features_input), name='condition')
-        x_c = layers.Flatten()(condition)
-        for i in range(n_layers):
-            x_c = dense_block(x_c, units=n_nodes[i], skip_connections=skip_connections)
+        if type == 'dense':
+            x_c = layers.Flatten()(condition)
+            for i in range(n_layers):
+                x_c = dense_block(x_c, units=n_nodes[i], skip_connections=skip_connections)
+        if type == 'conv':
+            x_c = layers.Reshape((T_condition, T_condition, num_features_input))(condition)
+            for i in range(n_layers):
+                x_c = conv_block(x_c, filters=n_nodes[i], kernel_size=(3,num_features_input), strides=1, padding='same', skip_connections=skip_connections)
+        if type == 'lstm':
+            x_c = condition
+            for i in range(n_layers):
+                x_c = lstm_block(x_c, units=n_nodes[i], skip_connections=skip_connections)
+            x_c = layers.Flatten()(x_c)
     else:
         T_gen = T_gen + T_condition
 
@@ -133,8 +151,8 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
             x = conv_block(x, filters=n_nodes[i], kernel_size=(3,num_features_input), strides=1, padding='same', skip_connections=skip_connections)
 
     if type == 'lstm':
+        x = input
         for i in range(n_layers):
-            x = input
             x = lstm_block(x, units=n_nodes[i], skip_connections=skip_connections)
  
     if type == 'dense':
@@ -146,8 +164,10 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
 
     if activate_condition == True:
         xi = layers.Concatenate()([xi, x_c])
+    
+    x = layers.Dense(32)(xi)
 
-    x = layers.Dense(T_gen*num_features_gen, activation='linear')(xi)
+    x = layers.Dense(T_gen*num_features_gen, activation='linear')(x)
 
     output = layers.Reshape((T_gen, num_features_gen))(x)
 
@@ -156,7 +176,7 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
     else:
         generator_model = Model([input], output, name='generator_model')
     
-    plot_model(generator_model, to_file='models/generator_plot.png', show_shapes=True, show_layer_names=True)
+    # plot_model(generator_model, to_file='models/generator_plot.png', show_shapes=True, show_layer_names=True)
     return generator_model
 
 # @tf.function
@@ -200,8 +220,8 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
 
         gradients_of_discriminator = disc_tape.gradient(discriminator_loss, discriminator_model.trainable_variables)
         # Clip the gradients to stabilize training
-        # gradients_of_discriminator = [tf.clip_by_value(grad, -0.01, 0.01) for grad in gradients_of_discriminator]
-        discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator_model.trainable_variables))
+        clipped_gradients = [tf.clip_by_norm(g, clip_norm=1) if g is not None else None for g in gradients_of_discriminator]
+        discriminator_optimizer.apply_gradients(zip(clipped_gradients, discriminator_model.trainable_variables))
 
     # Generator training
     with tf.GradientTape() as gen_tape:
@@ -211,6 +231,8 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
         generated_features_list = feature_extractor([generated_samples, condition])
 
         if loss == 'original':
+            generator_loss = compute_generator_loss(fake_output)
+        elif loss == 'original_fm':
             generator_loss = compute_generator_loss(fake_output)
             fm_loss = compute_feature_matching_loss(real_features_list, generated_features_list)
             generator_loss += fm_loss
@@ -229,6 +251,8 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
 def build_feature_extractor(discriminator, layer_indices):
     '''Build a feature extractor model from the discriminator model. This model will be used to compute the feature matching loss.'''
     outputs = [discriminator.layers[i].output for i in layer_indices]
+    for output in outputs:
+        logging.info(f'Extracted feature from layer with shape: {output.shape}')
     return tf.keras.Model(discriminator.input, outputs)
 
 # @tf.function

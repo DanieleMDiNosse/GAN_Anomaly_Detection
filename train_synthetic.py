@@ -8,6 +8,7 @@ from data_utils import *
 import argparse
 import logging
 import time
+from sklearn.preprocessing import StandardScaler
 # from tensorflow.keras.utils import plot_model
 from model_utils import *
 import gc
@@ -16,6 +17,31 @@ import sys
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import tensorflow as tf
+
+def synt_data(size):
+    '''This function generates a variable following an AR(1) process with autoregressive parameter that varies in time.
+
+    Parameters
+    ----------
+    size : int
+        Lenght of the resulting variable.
+
+    Returns
+    -------
+    X : ndarray of shape (N)
+        Synthetic generated variable.
+    b : ndarray of shape (N)
+        Time varying parameter.
+
+    '''
+    np.random.seed(666)
+    X = np.zeros(shape=size)
+    b = np.zeros(shape=size)
+    X[1] = np.random.normal(0, 1)
+    for t in range(1, size - 1):
+        b[t + 1] = 0.5 * np.sin(np.pi * (t + 1) / int(size / 10))
+        X[t + 1] = b[t + 1] * X[t] + np.random.normal(0, 1)
+    return X, b
 
 
 if __name__ == '__main__':
@@ -42,16 +68,19 @@ if __name__ == '__main__':
               'info': logging.INFO,
               'debug': logging.DEBUG}
     
-    # Print the current date and time
+    # Current date and time
     current_datetime = pd.Timestamp.now()
     formatted_datetime = current_datetime.strftime("%Y-%m-%d_%H-%M-%S")
     job_id = formatted_datetime
 
     if not os.path.exists('logs'):
         os.mkdir('logs')
+
+    # Create a log file
     logging.basicConfig(filename=f'logs/train_{job_id}.log', format='%(message)s', level=levels[args.log])
     logging.info(f"Current Date and Time:\n\t {formatted_datetime}")
 
+    # Set the logger of TensorFlow to ERROR
     logger = tf.get_logger()
     logger.setLevel('ERROR')
 
@@ -72,18 +101,32 @@ if __name__ == '__main__':
             logging.info(f'\t{device}\n')
     
     # Folders creation
+    if not os.path.exists('plots'):
+        os.mkdir('plots')
+    if not os.path.exists('generated_samples'):
+        os.mkdir('generated_samples')
+    if not os.path.exists('models'):
+        os.mkdir('models')
+
     os.mkdir(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Model architecture plots, metrics plots
     os.mkdir(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Generated samples
     os.mkdir(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Models
-   
+
     # Create a synthetic dataset for testing purposes
     logging.info('\n[Data] ---------- CREATING SYNTHETIC DATASET ----------')
-    normal_1 = np.random.normal(-2, 1, (2000))
-    normal_2 = np.random.normal(2, 2, (2000))
-    data1 = np.concatenate((normal_1, normal_2))
-    data2 = np.random.normal(-2, 1, (4000))
-    data = {'MixNormal': data1, 'Normal': data2}
-    data_df = pd.DataFrame(data)
+    # normal_1 = np.random.normal(-2, 1, (2000))
+    # normal_2 = np.random.normal(2, 2, (2000))
+    # data1 = np.concatenate((normal_1, normal_2))
+    # data2 = np.random.normal(-2, 1, (4000))
+    # data = {'MixNormal': data1, 'Normal': data2}
+    # data_df = pd.DataFrame(data)
+    # logging.info(f'data_df shape:\n\t{data_df.shape}')
+    X, b = synt_data(10000)
+    data_df = pd.DataFrame({'X': X, 'b': b})
+
+    # Normalize the data
+    scaler = StandardScaler()
+    data_df = pd.DataFrame(scaler.fit_transform(data_df), columns=data_df.columns)
     logging.info(f'data_df shape:\n\t{data_df.shape}')
     logging.info('[Data] --------------- DONE ---------------\n')
 
@@ -97,6 +140,7 @@ if __name__ == '__main__':
     n_epochs = 5000
     batch_size = args.batch_size
 
+    # Instantiate two empty vectors to store the condition and the input to the GAN
     condition_train = np.zeros((data_df.shape[0]//2, T_condition, data_df.shape[1]))
     input_train = np.zeros((data_df.shape[0]//2, T_gen, data_df.shape[1]))
 
@@ -106,10 +150,10 @@ if __name__ == '__main__':
     
     # Plot condition and input
     fig, axes = plt.subplots(2, 2, figsize=(10, 6), tight_layout=True)
-    axes[0, 0].hist(condition_train[:, 0, 0], bins=50, label='Condition MixNormal')
-    axes[0, 1].hist(condition_train[:, 0, 1], bins=50, label='Condition Normal')
-    axes[1, 0].hist(input_train[:, 0, 0], bins=50, label='Input MixNormal')
-    axes[1, 1].hist(input_train[:, 0, 1], bins=50, label='Input Normal')
+    axes[0, 0].hist(condition_train[:, 0, 0], bins=50, label=f'Condition {data_df.columns[0]}')
+    axes[0, 1].hist(condition_train[:, 0, 1], bins=50, label=f'Condition {data_df.columns[1]}')
+    axes[1, 0].hist(input_train[:, 0, 0], bins=50, label=f'Input {data_df.columns[0]}')
+    axes[1, 1].hist(input_train[:, 0, 1], bins=50, label=f'Input {data_df.columns[1]}')
     axes[0, 0].legend()
     axes[0, 1].legend()
     axes[1, 0].legend()
@@ -119,7 +163,6 @@ if __name__ == '__main__':
     logging.info(f'input_train shape:\n\t{input_train.shape}')
     logging.info(f'condition_train shape:\n\t{condition_train.shape}')
     
-
     # Define the parameters for the early stopping criterion
     best_gen_weights = None
     best_disc_weights = None
@@ -153,8 +196,10 @@ if __name__ == '__main__':
     # Build the models
     generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, True)
     discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, True, args.loss)
-    feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
-    exit()
+    if args.type_disc == 'dense':
+        layers_to_extract = [3+6*i for i in range(args.n_layers_disc)]
+        layers_to_extract.append(len(discriminator_model.layers)-2)
+    feature_extractor = build_feature_extractor(discriminator_model, [i for i in layers_to_extract])
 
     logging.info('\n[Model] ---------- MODEL SUMMARIES ----------')
     generator_model.summary(print_fn=logging.info)
@@ -263,24 +308,31 @@ if __name__ == '__main__':
     # Load the best generator
     generator_model = tf.keras.models.load_model(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.h5')
     
-    generated_samples = []
+    noise_val = tf.random.normal([input_train.shape[0], T_gen*latent_dim, n_features_gen])
+    generated_samples_train = []
+    generated_samples_val = []
     real_samples = []
-    k = 0
+    j = 0
     for batch_condition, batch in dataset_train:
-        gen_sample = generator_model([noises[k], batch_condition])
-        for i in range(gen_sample.shape[0]):
+        noise_t = noise_train[j*batch_size:(j+1)*batch_size]
+        noise_v = noise_val[j*batch_size:(j+1)*batch_size]
+        gen_sample_train = generator_model([noise_t, batch_condition])
+        gen_sample_val = generator_model([noise_v, batch_condition])
+        for i in range(gen_sample_train.shape[0]):
             # All the appended samples will be of shape (T_gen, n_features_gen)
-            generated_samples.append(gen_sample[i, -1, :])
+            generated_samples_train.append(gen_sample_train[i, -1, :])
+            generated_samples_val.append(gen_sample_val[i, -1, :])
             real_samples.append(batch[i, -1, :])
-        k += 1
-    plot_pca_with_marginals(generated_samples, real_samples, job_id, args)
+        j += 1
+    plot_pca_with_marginals(generated_samples_train, real_samples, f'{job_id}_train', args)
+    plot_pca_with_marginals(generated_samples_val, real_samples, f'{job_id}_val', args)
     logging.info('Done.')
 
 
     logging.info('Computing the errors on the correlation matrix using bootstrap...')
     # At the end of the training, compute the errors on the correlation matrix using bootstrap.
     # In order to do so, I need the best generator and the noises used.
-    correlation_matrix(dataset_train, generator_model, noises, T_gen, n_features_gen, job_id)
+    correlation_matrix(dataset_train, generator_model, noise, T_gen, n_features_gen, job_id)
     logging.info('Done.')
 
     # Maybe it is not necessary, but I prefer to clear all the memory and exit the script
