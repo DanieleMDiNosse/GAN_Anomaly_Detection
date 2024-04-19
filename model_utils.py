@@ -180,7 +180,7 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
     return generator_model
 
 # @tf.function
-def train_step(real_samples, condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, loss, batch_size, j):#, num_batches, j, job_id, epoch, metrics, args):
+def train_step(real_samples, condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, loss, batch_size, clipping):#, num_batches, j, job_id, epoch, metrics, args):
     discriminator_optimizer = optimizer[0]
     generator_optimizer = optimizer[1]
 
@@ -219,9 +219,10 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
                 discriminator_loss += 10.0 * gp
 
         gradients_of_discriminator = disc_tape.gradient(discriminator_loss, discriminator_model.trainable_variables)
+        if clipping == True:
         # Clip the gradients to stabilize training
-        clipped_gradients = [tf.clip_by_norm(g, clip_norm=1) if g is not None else None for g in gradients_of_discriminator]
-        discriminator_optimizer.apply_gradients(zip(clipped_gradients, discriminator_model.trainable_variables))
+            gradients_of_discriminator = [tf.clip_by_norm(g, clip_norm=1) if g is not None else None for g in gradients_of_discriminator]
+        discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator_model.trainable_variables))
 
     # Generator training
     with tf.GradientTape() as gen_tape:
@@ -355,13 +356,9 @@ def overall_wasserstein_distance(generator_model, dataset_train, noise):
     n_features_gen = batch_condition.shape[2]
     W_features = []
     for feature in range(n_features_gen):
-        W_samples = []
         w = wasserstein_distance(real_samples[:, feature], gen_samples[:, feature])
-        W_samples.append(w)
-    W_samples = np.array(W_samples)
-    logging.info(W_samples.shape)
-    exit()
-    W_features.append(np.mean(np.array(W_samples)))
+        W_features.append(w)
+    W_features = np.array(W_features)
     overall_W_mean = np.mean(np.array(W_features))
 
     return overall_W_mean

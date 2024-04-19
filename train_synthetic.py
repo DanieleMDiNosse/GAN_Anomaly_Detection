@@ -18,7 +18,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import tensorflow as tf
 
-def synt_data(size):
+def ar1_sine(size):
     '''This function generates a variable following an AR(1) process with autoregressive parameter that varies in time.
 
     Parameters
@@ -94,25 +94,26 @@ def step_fun(freq):
             step[t] = np.random.randint(0, 5)
     return step
 
-def ar1():
+def ar1(size):
     # Parameters
-    num_periods = 1000  # Total number of periods to generate
-    samples_per_period = 100  # Number of samples per period
     phi = 0.9  # AR(1) coefficient
     mu = 0.4
-    time = np.linspace(0, 2 * np.pi * num_periods, samples_per_period * num_periods)
+    time = np.linspace(0, size)
 
     # Generate the AR(1) process
     ar1 = np.zeros(time.shape)
     for t in range(1, len(time)):
         ar1[t] = mu + phi * ar1[t - 1] + np.random.normal(0, 0.5)
-    return ar1
+    
+    data_df = pd.DataFrame({'X1': ar1})
+    return data_df
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='''Main script used to train the GAN on synthetic data.''')
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
+    parser.add_argument('-d', '--data', help='Type of synthetic data to generate (sine, ar1_sine, step_fun, ar1)', type=str, default='sine')
     parser.add_argument('-bs', '--batch_size', help='Batch size', type=int)
     parser.add_argument('-ld', '--latent_dim', help='Latent dimension', type=int)
     parser.add_argument('-nlg', '--n_layers_gen', help='Number of generator layers', type=int)
@@ -123,6 +124,7 @@ if __name__ == '__main__':
     parser.add_argument('-Tc', '--T_condition', help='Number of time steps to condition on', type=int, default=2)
     parser.add_argument('-Tg', '--T_gen', help='Number of time steps to generate', type=int, default=1)
     parser.add_argument('-ls', '--loss', help='Loss function (original, wasserstein)', type=str, default='original')
+    parser.add_argument('-cl', '--clipping', action='store_true', help='Use or not weight clipping')
     parser.add_argument('-sy', '--synthetic', action='store_true', help='Pass it if your data is synthetic.')
 
     args = parser.parse_args()
@@ -178,8 +180,14 @@ if __name__ == '__main__':
 
     # Create a synthetic dataset for testing purposes
     logging.info('\n[Data] ---------- CREATING SYNTHETIC DATASET ----------')
-    # data_df = synt_data(2000)
-    data_df = sin_wave(1, 0.1, 0, 10, 100, change_amplitude=False)
+    if args.data == 'sine':
+        data_df = sin_wave(1, 0.1, 0, 10, 100, change_amplitude=False)
+    if args.data == 'ar1_sine':
+        data_df = ar1_sine(1000)
+    if args.data == 'step_fun':
+        data_df = step_fun(10)
+    if args.data == 'ar1':
+        data_df = ar1(1000)
 
     # Normalize the data
     scaler = StandardScaler()
@@ -206,15 +214,12 @@ if __name__ == '__main__':
         input_train[i, :, :] = data_df.iloc[2*i+1, :].values
     
     # Plot condition and input
-    fig, axes = plt.subplots(2, 2, figsize=(10, 6), tight_layout=True)
-    axes[0, 0].hist(condition_train[:, 0, 0], bins=50, label=f'Condition {data_df.columns[0]}')
-    axes[0, 1].hist(condition_train[:, 0, 1], bins=50, label=f'Condition {data_df.columns[1]}')
-    axes[1, 0].hist(input_train[:, 0, 0], bins=50, label=f'Input {data_df.columns[0]}')
-    axes[1, 1].hist(input_train[:, 0, 1], bins=50, label=f'Input {data_df.columns[1]}')
-    axes[0, 0].legend()
-    axes[0, 1].legend()
-    axes[1, 0].legend()
-    axes[1, 1].legend()
+    fig, axes = plt.subplots(2, n_features_input, figsize=(10, 6), tight_layout=True)
+    for i in range(n_features_input):
+        axes[0, i].hist(condition_train[:, :, i], bins=50, label=f'Condition {data_df.columns[i]}, alpha=0.8')
+        axes[1, i].hist(input_train[:, :, i], bins=50, label=f'Input {data_df.columns[i]}, alpha=0.8')
+        axes[0, i].legend()
+        axes[1, i].legend()
     plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/0_condition_input.png')
     
     logging.info(f'input_train shape:\n\t{input_train.shape}')
@@ -225,7 +230,7 @@ if __name__ == '__main__':
     best_disc_weights = None
     best_wass_dist = float('inf')
     patience_counter = 0
-    patience = 200
+    patience = 400
 
     logging.info(f"\nHYPERPARAMETERS:\n"
                     f"\tgenerator: {args.type_gen}\n"
@@ -242,6 +247,7 @@ if __name__ == '__main__':
                     f"\tT_gen: {T_gen}\n"
                     f"\tbatch_size: {batch_size} (num_batches: {input_train.shape[0]//batch_size})\n"
                     f"\tloss: {args.loss}\n"
+                    f"\tclipping disc gradients: {args.clipping}\n"
                     f"\tpatience: {patience}\n"
                     f"\tjob_id: {job_id}\n")
 
@@ -288,14 +294,12 @@ if __name__ == '__main__':
         for batch_condition, batch_real_samples in dataset_train:
             batch_size = batch_real_samples.shape[0]
             noise = noise_train[j*batch_size:(j+1)*batch_size]
-            gen_samples_train, real_output, fake_output, discriminator_loss, generator_loss = train_step(batch_real_samples, batch_condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, args.loss, batch_size, j)
+            gen_samples_train, real_output, fake_output, discriminator_loss, generator_loss = train_step(batch_real_samples, batch_condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, args.loss, batch_size, args.clipping)
             j += 1
         logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
 
-        start = time.time()
-        # Summarize performance at each epoch
-        summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, metrics, job_id, args)
-        logging.info(f'Summarizing performance took {time.time()-start:.2f} seconds.')
+        if epoch % 10 == 0 and epoch > 0:
+            summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, metrics, job_id, args)
 
         if epoch % 25 == 0 and epoch > 0:
             logging.info(f'Plotting the W1 distances at epoch {epoch}...')
@@ -313,7 +317,7 @@ if __name__ == '__main__':
             plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/1_wasserstein_distance.png')
             logging.info('Done.')
 
-        if epoch % 25 == 0 and epoch > 0:
+        if epoch % 100 == 0 and epoch > 0:
             logging.info(f'Plotting generated samples by the GAN at epoch {epoch}...')
             features = data_df.columns
             plot_samples(dataset_train, generator_model, features, T_gen, n_features_gen, job_id, epoch, args)
@@ -324,7 +328,7 @@ if __name__ == '__main__':
             discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.keras')
             logging.info('Done')
 
-        if epoch > 2500:
+        if epoch > 3000:
             logging.info('Check Early Stopping Criteria...')
             if W1_val[-1] + 5e-4 < best_wass_dist:
                 logging.info(f'Wasserstein distance improved from {best_wass_dist} to {W1_train}')
