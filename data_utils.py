@@ -684,17 +684,30 @@ def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_
         means_real.append(np.mean(d_real))
         means_gen.append(np.mean(d_gen))
         p_values.append(p_value)
-        axes[i].plot(d_gen[:1000], label='Generated', alpha=0.85)
-        axes[i].plot(d_real[:1000], label='Real', alpha=0.85)
-        axes[i].set_title(f'Generated {feature}_{epoch}')
-        axes[i].legend()
-        axes1[i].hist(d_gen, bins=100, label='Generated', alpha=0.75)
-        axes1[i].hist(d_real, bins=100, label='Real', alpha=0.75)
-        axes1[i].set_title(f'Generated {feature}_{epoch}')
-        axes1[i].set_yscale('log')
-        axes1[i].legend()
-    axes[i].set_xlabel('Time (Events)')
-    axes1[i].set_xlabel('Values')
+        if n_features_gen == 1:
+            axes.plot(d_gen[:1000], label='Generated', alpha=0.85)
+            axes.plot(d_real[:1000], label='Real', alpha=0.85)
+            axes.set_title(f'Generated {feature}_{epoch}')
+            axes.legend()
+            axes1.hist(d_gen, bins=100, label='Generated', alpha=0.75)
+            axes1.hist(d_real, bins=100, label='Real', alpha=0.75)
+            axes1.set_title(f'Generated {feature}_{epoch}')
+            axes1.set_yscale('log')
+            axes1.legend()
+            axes.set_xlabel('Time (Events)')
+            axes1.set_xlabel('Values')
+        else:
+            axes[i].plot(d_gen[:1000], label='Generated', alpha=0.85)
+            axes[i].plot(d_real[:1000], label='Real', alpha=0.85)
+            axes[i].set_title(f'Generated {feature}_{epoch}')
+            axes[i].legend()
+            axes1[i].hist(d_gen, bins=100, label='Generated', alpha=0.75)
+            axes1[i].hist(d_real, bins=100, label='Real', alpha=0.75)
+            axes1[i].set_title(f'Generated {feature}_{epoch}')
+            axes1[i].set_yscale('log')
+            axes1[i].legend()
+            axes[i].set_xlabel('Time (Events)')
+            axes1[i].set_xlabel('Values')
     path = f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}'
     fig.savefig(f'{path}/7_generated_samples_{epoch}.png')
     fig1.savefig(f'{path}/3_generated_samples_hist_{epoch}.png')
@@ -725,36 +738,39 @@ def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_
     plt.savefig(f'{path}/5_average_LOB_shape_{epoch}.png')
     plt.close()
 
-    # generated_samples = generated_samples.reshape(generated_samples.shape[0]*generated_samples.shape[1], generated_samples.shape[2])
-    # real_samples = real_samples.reshape(real_samples.shape[0]*real_samples.shape[1], real_samples.shape[2])
     correlation_matrix_gen = np.corrcoef(generated_samples, rowvar=False)
     correlation_matrix_real = np.corrcoef(real_samples, rowvar=False)
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
-    axes[0].imshow(correlation_matrix_gen, cmap='coolwarm', vmin=-1, vmax=1)
-    axes[0].set_title('Correlation Matrix (generated samples)')
-    axes[0].set_xticks(range(generated_samples.shape[1]))
-    axes[0].set_yticks(range(generated_samples.shape[1]))
-    axes[0].set_xticklabels(features, rotation=90)
-    axes[0].set_yticklabels(features)
-    # Display the correlation values on the heatmap
-    for i in range(correlation_matrix_gen.shape[0]):
-        for j in range(correlation_matrix_gen.shape[1]):
-            axes[0].text(j, i, round(correlation_matrix_gen[i, j], 2),
-                    ha='center', va='center',
-                    color='black')
-    axes[1].imshow(correlation_matrix_real, cmap='coolwarm', vmin=-1, vmax=1)
-    axes[1].set_title('Correlation Matrix (real samples)')
-    axes[1].set_xticks(range(generated_samples.shape[1]))
-    axes[1].set_yticks(range(generated_samples.shape[1]))
-    axes[1].set_xticklabels(features, rotation=90)
-    axes[1].set_yticklabels(features)
-    for i in range(correlation_matrix_real.shape[0]):
-        for j in range(correlation_matrix_real.shape[1]):
-            axes[1].text(j, i, round(correlation_matrix_real[i, j], 2),
-                    ha='center', va='center',
-                    color='black')
-    plt.savefig(f'{path}/6_correlation_matrix_{epoch}.png')
-    plt.close()
+    if n_features_gen == 1:
+        # add a dimension to the correlation matrix
+        logging.info(f'Real correlations:\n\t{correlation_matrix_real}')
+        logging.info(f'Generated correlations:\n\t{correlation_matrix_gen}')
+    else:
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
+        axes[0].imshow(correlation_matrix_gen, cmap='coolwarm', vmin=-1, vmax=1)
+        axes[0].set_title('Correlation Matrix (generated samples)')
+        axes[0].set_xticks(range(generated_samples.shape[1]))
+        axes[0].set_yticks(range(generated_samples.shape[1]))
+        axes[0].set_xticklabels(features, rotation=90)
+        axes[0].set_yticklabels(features)
+        # Display the correlation values on the heatmap
+        for i in range(correlation_matrix_gen.shape[0]):
+            for j in range(correlation_matrix_gen.shape[1]):
+                axes[0].text(j, i, round(correlation_matrix_gen[i, j], 2),
+                        ha='center', va='center',
+                        color='black')
+        axes[1].imshow(correlation_matrix_real, cmap='coolwarm', vmin=-1, vmax=1)
+        axes[1].set_title('Correlation Matrix (real samples)')
+        axes[1].set_xticks(range(generated_samples.shape[1]))
+        axes[1].set_yticks(range(generated_samples.shape[1]))
+        axes[1].set_xticklabels(features, rotation=90)
+        axes[1].set_yticklabels(features)
+        for i in range(correlation_matrix_real.shape[0]):
+            for j in range(correlation_matrix_real.shape[1]):
+                axes[1].text(j, i, round(correlation_matrix_real[i, j], 2),
+                        ha='center', va='center',
+                        color='black')
+        plt.savefig(f'{path}/6_correlation_matrix_{epoch}.png')
+        plt.close()
     
     return None
 

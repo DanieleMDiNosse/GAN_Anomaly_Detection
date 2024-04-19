@@ -1,9 +1,10 @@
 #!/bin/bash
-source ~/.bashrc
-conda activate dmdn
-cd /home/ddinosse/GAN_Anomaly_Detection
+# source ~/.bashrc
+# conda activate dmdn
+# cd /home/ddinosse/GAN_Anomaly_Detection
 
 sleep 0.5
+data=ar1
 type_gen=dense
 type_disc=dense
 n_layers_gen=3
@@ -18,7 +19,7 @@ latent_dim=$(($depth*25))
 # synthetic should be passed if you are testing on synthetic data
 # clipping should be passed if you want to clip the gradients of the discriminator
 
-python train_synthetic.py -bs=$batch_size -ld=$latent_dim -tg=$type_gen -td=$type_disc -nlg=$n_layers_gen -nld=$n_layers_disc -ls=$loss -Tc=$T_condition -Tg=$T_gen --synthetic # --clipping --skip_connection
+python train_synthetic.py -d=$data -bs=$batch_size -ld=$latent_dim -tg=$type_gen -td=$type_disc -nlg=$n_layers_gen -nld=$n_layers_disc -ls=$loss -Tc=$T_condition -Tg=$T_gen --synthetic # --clipping --skip_connection
 
 
 
