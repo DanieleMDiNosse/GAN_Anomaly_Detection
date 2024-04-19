@@ -684,8 +684,8 @@ def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_
         means_real.append(np.mean(d_real))
         means_gen.append(np.mean(d_gen))
         p_values.append(p_value)
-        axes[i].plot(d_gen[:200], label='Generated', alpha=0.85)
-        axes[i].plot(d_real[:200], label='Real', alpha=0.85)
+        axes[i].plot(d_gen[:1000], label='Generated', alpha=0.85)
+        axes[i].plot(d_real[:1000], label='Real', alpha=0.85)
         axes[i].set_title(f'Generated {feature}_{epoch}')
         axes[i].legend()
         axes1[i].hist(d_gen, bins=100, label='Generated', alpha=0.75)
@@ -1014,42 +1014,6 @@ def create_animated_gif(job_id):
     for image_file in image_files:
         os.remove(os.path.join(f'plots/{image_folder}', image_file))
 
-def sin_wave(amplitude, omega, phi, change_amplitude=False):
-    '''This function generates a sine wave with the specified parameters.
-    
-    Parameters
-    ----------
-    amplitude : float
-        Amplitude of the sine wave.
-    omega : float
-        Frequency of the sine wave.
-    phi : float
-        Phase of the sine wave.
-    change_amplitude : bool, optional
-        If True, the amplitude of the sine wave will be modified every 3 periods. The default is False.
-    
-    Returns
-    -------
-    sine_wave : numpy array
-        Sine wave with the specified parameters.'''
-    # Parameters
-    num_periods = 1000  # Total number of periods to generate
-    samples_per_period = 100  # Number of samples per period
-
-    # Generate a time vector
-    time = np.linspace(0, 2 * np.pi * num_periods, samples_per_period * num_periods)
-
-    # Generate the sine wave
-    sine_wave = amplitude * np.sin(omega*time + phi)
-
-    # Modify the amplitude every 3 periods
-    if change_amplitude:
-        for i in range(num_periods):
-            if i % 5 == 2:  # Check if it is the third period (0-based index)
-                sine_wave[i * samples_per_period:(i + 1) * samples_per_period] *= 3
-    # sine_wave = np.reshape(sine_wave, (sine_wave.shape[0], 1))
-    return sine_wave
-
 def plot_volumes(orderbook_df, depth, stock, date):
     '''This function create a bar plot displaying the volumes for a random index (random LOB snapshot). 
     The space between the last bid and the first ask must be equal to the spread for that index'''
@@ -1093,35 +1057,6 @@ def plot_volumes(orderbook_df, depth, stock, date):
 
         plt.savefig(f'plots/{stock}_{date}_LOB_snapshot_{idx}.png')
         plt.close()
-
-def step_fun(freq):
-    # Parameters
-    num_periods = 1000  # Total number of periods to generate
-    samples_per_period = 100  # Number of samples per period
-
-    # Generate a time vector
-    time = np.linspace(0, 2 * np.pi * num_periods, samples_per_period * num_periods)
-
-    # Generate the step function
-    step = np.zeros(time.shape)
-    for t in range(len(time)):
-        if time[t] % (np.pi) < np.pi/(freq*2):
-            step[t] = np.random.randint(0, 5)
-    return step
-
-def ar1():
-    # Parameters
-    num_periods = 1000  # Total number of periods to generate
-    samples_per_period = 100  # Number of samples per period
-    phi = 0.9  # AR(1) coefficient
-    mu = 0.4
-    time = np.linspace(0, 2 * np.pi * num_periods, samples_per_period * num_periods)
-
-    # Generate the AR(1) process
-    ar1 = np.zeros(time.shape)
-    for t in range(1, len(time)):
-        ar1[t] = mu + phi * ar1[t - 1] + np.random.normal(0, 0.5)
-    return ar1
 
 def ar1_fit(data):
     # Fit an AR(1) model to the data

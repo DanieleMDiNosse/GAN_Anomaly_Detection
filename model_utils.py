@@ -107,7 +107,7 @@ def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, nu
     
     x = layers.Dense(32)(x)
 
-    if loss == 'original':
+    if loss == 'original' or loss == 'original_fm':
         output = layers.Dense(1, activation='sigmoid')(x)
     elif loss == 'wasserstein':
         output = layers.Dense(1)(x)
@@ -184,7 +184,7 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
     discriminator_optimizer = optimizer[0]
     generator_optimizer = optimizer[1]
 
-    if loss == 'original':
+    if loss == 'original' or loss == 'original_fm':
         disc_step = 1
     elif loss == 'wasserstein':
         disc_step = 5
@@ -210,7 +210,7 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
             real_output = discriminator_model([real_samples, condition], training=True)
             fake_output = discriminator_model([generated_samples, condition], training=True)
 
-            if loss == 'original':
+            if loss == 'original' or loss == 'original_fm':
                 discriminator_loss = compute_discriminator_loss(real_output, fake_output)
             elif loss == 'wasserstein':
                 # The critic in a WGAN is trained to output higher scores for real data and lower scores for generated data
@@ -338,12 +338,13 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
 def overall_wasserstein_distance(generator_model, dataset_train, noise):
     gen_samples = []
     real_samples = []
+    
     j = 0
-
     # Generate all the samples
     for batch_condition, _ in dataset_train:
         batch_size = batch_condition.shape[0]
         gen_sample = generator_model([noise[j*batch_size:(j+1)*batch_size], batch_condition])
+        j += 1
         for i in range(gen_sample.shape[0]):
             # All the appended samples will be of shape (T_gen, n_features_gen)
             gen_samples.append(gen_sample[i, -1, :])
@@ -357,6 +358,9 @@ def overall_wasserstein_distance(generator_model, dataset_train, noise):
         W_samples = []
         w = wasserstein_distance(real_samples[:, feature], gen_samples[:, feature])
         W_samples.append(w)
+    W_samples = np.array(W_samples)
+    logging.info(W_samples.shape)
+    exit()
     W_features.append(np.mean(np.array(W_samples)))
     overall_W_mean = np.mean(np.array(W_features))
 
