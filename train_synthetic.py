@@ -141,7 +141,6 @@ if __name__ == '__main__':
     parser.add_argument('-Tg', '--T_gen', help='Number of time steps to generate', type=int, default=1)
     parser.add_argument('-ls', '--loss', help='Loss function (original, wasserstein)', type=str, default='original')
     parser.add_argument('-cl', '--clipping', action='store_true', help='Use or not weight clipping')
-    parser.add_argument('-sy', '--synthetic', action='store_true', help='Pass it if your data is synthetic.')
 
     args = parser.parse_args()
     levels = {'critical': logging.CRITICAL,
@@ -159,7 +158,7 @@ if __name__ == '__main__':
         os.mkdir('logs')
 
     # Create a log file
-    logging.basicConfig(filename=f'logs/train_{job_id}.log', format='%(message)s', level=levels[args.log])
+    logging.basicConfig(filename=f'logs/train_synthetic_{job_id}.log', format='%(message)s', level=levels[args.log])
     logging.info(f"Current Date and Time:\n\t {formatted_datetime}")
 
     # Set the logger of TensorFlow to ERROR
@@ -315,6 +314,7 @@ if __name__ == '__main__':
 
     W1_train = []
     W1_val = []
+    delta_monitor = 25
     for epoch in range(n_epochs):
         if epoch % 1 == 0:
             logging.info(f'Epoch: {epoch}/{n_epochs}')
@@ -330,10 +330,10 @@ if __name__ == '__main__':
             j += 1
         logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
 
-        if epoch % 25 == 0 and epoch > 0:
+        if epoch % delta_monitor//2 == 0 and epoch > 0:
             summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, metrics, job_id, args)
 
-        if epoch % 25 == 0 and epoch > 0:
+        if epoch % delta_monitor == 0 and epoch > 0:
             logging.info(f'Plotting the W1 distances at epoch {epoch}...')
             W1_tr, gen_samples_train = overall_wasserstein_distance(generator_model, dataset_train, noise_train)
             W1_train.append(W1_tr)
@@ -349,17 +349,19 @@ if __name__ == '__main__':
             plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/1_wasserstein_distance.png')
             logging.info('Done.')
 
-        if epoch % 100 == 0 and epoch > 0:
+        if epoch % (delta_monitor*5) == 0 and epoch > 0:
             logging.info(f'Plotting generated samples by the GAN at epoch {epoch}...')
             features = data_df.columns
             plot_samples(dataset_train, generator_model, features, T_gen, n_features_gen, job_id, epoch, args)
             logging.info('Done.')
 
             if args.data == 'ar1':
-                logging.info('Fitting and AR(1) model to the generated samples...')
+                logging.info('Fitting and AR(1) model to the generated samples (back-transformed)...')
                 logging.info(f'Real parameters:\n\tmu: {mu}\n\tphi: {phi}')
+                # inverse transform the generated samples
+                gen_samples_train_inv = scaler.inverse_transform(gen_samples_train)
                 for i in range(n_features_gen):
-                    params, summary = fit_ARn(gen_samples_train, 1)
+                    params, summary = fit_ARn(gen_samples_train_inv[:, i], 1)
                     logging.info(f'Generated parameters: \n\tmu: {params[0]:.2f}\n\tphi: {params[1]:.2f}\n')
                 logging.info('Done.')
             logging.info('Saving the models...')
@@ -371,7 +373,7 @@ if __name__ == '__main__':
             logging.info('Check Early Stopping Criteria...')
             if W1_val[-1] + 5e-4 < best_wass_dist:
                 logging.info(f'Wasserstein distance improved from {best_wass_dist} to {W1_train}')
-                best_wass_dist = W1_train[-1]
+                best_wass_dist = W1_val[-1]
                 best_gen_weights = generator_model.get_weights()
                 best_disc_weights = discriminator_model.get_weights()
                 patience_counter = 0

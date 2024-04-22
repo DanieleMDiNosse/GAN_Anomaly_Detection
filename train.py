@@ -37,8 +37,8 @@ if __name__ == '__main__':
     parser.add_argument('-Tc', '--T_condition', help='Number of time steps to condition on', type=int, default=2)
     parser.add_argument('-Tg', '--T_gen', help='Number of time steps to generate', type=int, default=1)
     parser.add_argument('-ls', '--loss', help='Loss function (original, wasserstein)', type=str, default='original')
+    parser.add_argument('-cl', '--clipping', action='store_true', help='Use or not weight clipping')
     parser.add_argument('-lo', '--load', help='Load a model. The job_id must be provided', type=int, default=0)
-    parser.add_argument('-sy', '--synthetic', action='store_true', help='Pass it if your data is synthetic.')
 
     args = parser.parse_args()
     levels = {'critical': logging.CRITICAL,
@@ -131,9 +131,9 @@ if __name__ == '__main__':
     best_disc_weights = None
     best_wass_dist = float('inf')
     patience_counter = 0
-    patience = 200
+    patience = 1000
 
-    if not os.path.exists(f'../data/{stock}_{date}/input_train_{stock}_{window_size}_{N}days_orderbook.npy') and not args.synthetic:
+    if not os.path.exists(f'../data/{stock}_{date}/input_train_{stock}_{window_size}_{N}days_orderbook.npy'):
         logging.info('\n[Input&Condition] ---------- CREATING INPUT AND CONDITION ----------')
         logging.info('\nDividing each window into condition and input...')
         condition_train = np.zeros((orderbook_df.shape[0]//2, T_condition, n_features_input))
@@ -153,7 +153,7 @@ if __name__ == '__main__':
         logging.info('Done.')
         logging.info('\n[Input&Condtion] --------------- DONE ---------------\n')
 
-    elif os.path.exists(f'../data/{stock}_{date}/input_train_{stock}_{window_size}_{N}days_orderbook.npy') and not args.synthetic:
+    elif os.path.exists(f'../data/{stock}_{date}/input_train_{stock}_{window_size}_{N}days_orderbook.npy'):
         logging.info('Loading input_train and condition_train...')
         input_train = np.load(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
         condition_train = np.load(f'../data/{stock}_{date}/miscellaneous/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
@@ -161,28 +161,6 @@ if __name__ == '__main__':
         logging.info(f'input_train shape:\n\t{input_train.shape}')
         logging.info(f'condition_train shape:\n\t{condition_train.shape}')
         logging.info('Done.')
-
-    elif args.synthetic:
-        # Create a synthetic dataset for testing purposes
-        logging.info('\n[Data] ---------- CREATING SYNTHETIC DATASET ----------')
-        normal_1 = np.random.normal(-2, 1, (2000))
-        normal_2 = np.random.normal(2, 2, (2000))
-        data1 = np.concatenate((normal_1, normal_2))
-        data2 = np.random.normal(-2, 1, (4000))
-        data = {'data1': data1, 'data2': data2}
-        data_df = pd.DataFrame(data)
-        logging.info(f'data_df shape:\n\t{data_df.shape}')
-
-        condition_train = np.zeros((data_df.shape[0]//2, T_condition, data_df.shape[1]))
-        input_train = np.zeros((data_df.shape[0]//2, T_gen, data_df.shape[1]))
-
-        for i in range(0, condition_train.shape[0]):
-            condition_train[i, :, :] = data_df.iloc[2*i, :].values
-            input_train[i, :, :] = data_df.iloc[2*i+1, :].values
-        
-        logging.info(f'input_train shape:\n\t{input_train.shape}')
-        logging.info(f'condition_train shape:\n\t{condition_train.shape}')
-        logging.info('[Data] --------------- DONE ---------------\n')
 
     # Create bar plots showing the empirical distribution of the LOB snapshots at time t and t+1
     logging.info('Creating bar plots showing the empirical distribution of the LOB snapshots at time t and t+1...')
@@ -219,7 +197,19 @@ if __name__ == '__main__':
         # Build the models
         generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, True)
         discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, True, args.loss)
-        feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
+        if args.type_disc == 'dense':
+            if args.skip_connection:
+                layers_to_extract = [7+8*i for i in range(args.n_layers_disc)]
+            else:
+                layers_to_extract = [7+6*i for i in range(args.n_layers_disc)]
+            layers_to_extract.append(len(discriminator_model.layers)-2)
+        if args.type_disc == 'lstm':
+            layers_to_extract = [4+4*i for i in range(args.n_layers_disc)]
+            layers_to_extract.append(len(discriminator_model.layers)-2)
+        if args.type_disc == 'conv':
+            layers_to_extract = [4+4*i for i in range(args.n_layers_disc)]
+            layers_to_extract.append(len(discriminator_model.layers)-2)
+        feature_extractor = build_feature_extractor(discriminator_model, [i for i in layers_to_extract])
     else:
         prev_job_id = args.load
         # Load the models
@@ -247,8 +237,9 @@ if __name__ == '__main__':
 
     W1_train = []
     W1_val = []
+    delta_monitor = 25
     for epoch in range(n_epochs):
-        if epoch % 1 == 0:
+        if epoch % 10 == 0:
             logging.info(f'Epoch: {epoch}/{n_epochs}')
 
         # Create the noise for the generator
@@ -262,12 +253,11 @@ if __name__ == '__main__':
             j += 1
         logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
 
-        start = time.time()
         # Summarize performance at each epoch
-        summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, metrics, job_id, args)
-        logging.info(f'Summarizing performance took {time.time()-start:.2f} seconds.')
+        if epoch % int(delta_monitor/2) == 0 and epoch > 0:
+            summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, metrics, job_id, args)
 
-        if epoch % 25 == 0 and epoch > 0:
+        if epoch % delta_monitor == 0 and epoch > 0:
             logging.info(f'Plotting the W1 distances at epoch {epoch}...')
             W1_tr = overall_wasserstein_distance(generator_model, dataset_train, noise_train)
             W1_train.append(W1_tr)
@@ -283,7 +273,7 @@ if __name__ == '__main__':
             plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/1_wasserstein_distance.png')
             logging.info('Done.')
 
-        if epoch % 25 == 0 and epoch > 0:
+        if epoch % (delta_monitor*5) == 0 and epoch > 0:
             logging.info(f'Plotting generated samples by the GAN at epoch {epoch}...')
             features = orderbook_df.columns
             plot_samples(dataset_train, generator_model, features, T_gen, n_features_gen, job_id, epoch, args)
@@ -294,11 +284,11 @@ if __name__ == '__main__':
             discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.keras')
             logging.info('Done')
 
-        if epoch > 2500:
+        if epoch > 50000:
             logging.info('Check Early Stopping Criteria...')
-            if W1_train[-1] + 5e-4 < best_wass_dist:
+            if W1_val[-1] + 5e-4 < best_wass_dist:
                 logging.info(f'Wasserstein distance improved from {best_wass_dist} to {W1_train}')
-                best_wass_dist = W1_train[-1]
+                best_wass_dist = W1_val[-1]
                 best_gen_weights = generator_model.get_weights()
                 best_disc_weights = discriminator_model.get_weights()
                 patience_counter = 0
