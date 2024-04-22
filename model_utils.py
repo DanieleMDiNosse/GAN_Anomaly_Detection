@@ -348,8 +348,8 @@ def overall_wasserstein_distance(generator_model, dataset_train, noise):
         j += 1
         for i in range(gen_sample.shape[0]):
             # All the appended samples will be of shape (T_gen, n_features_gen)
-            gen_samples.append(gen_sample[i, -1, :])
-            real_samples.append(batch_condition[i, -1, :])
+            gen_samples.append(gen_sample[i, -1, :].numpy())
+            real_samples.append(batch_condition[i, -1, :].numpy())
 
     gen_samples = np.array(gen_samples)
     real_samples = np.array(real_samples)
@@ -361,7 +361,7 @@ def overall_wasserstein_distance(generator_model, dataset_train, noise):
     W_features = np.array(W_features)
     overall_W_mean = np.mean(np.array(W_features))
 
-    return overall_W_mean
+    return overall_W_mean, gen_samples
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(

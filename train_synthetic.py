@@ -13,6 +13,8 @@ from sklearn.preprocessing import StandardScaler
 from model_utils import *
 import gc
 import sys
+import statsmodels.api as sm
+from statsmodels.tsa.ar_model import AutoReg
 # Change the environment variable TF_CPP_MIN_LOG_LEVEL to 3 to log only errors of tf
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
@@ -94,10 +96,7 @@ def step_fun(freq):
             step[t] = np.random.randint(0, 5)
     return step
 
-def ar1(size):
-    # Parameters
-    phi = 0.9  # AR(1) coefficient
-    mu = 0.4
+def ar1(mu, phi, size):
     time = np.arange(0, size)
 
     # Generate the AR(1) process
@@ -107,6 +106,23 @@ def ar1(size):
     
     data_df = pd.DataFrame({'AR(1)': ar1})
     return data_df
+
+def fit_ARn(time_series, n):
+    """
+    Fit an AR(n) model to a given time series provided as a numpy array or list.
+    
+    Parameters:
+    - time_series: A list or numpy array containing the time series data.
+    
+    Returns:
+    - A tuple containing the model's fitted parameters and the summary of the model fit.
+    """
+    # Fit the AR(1) model
+    model = AutoReg(time_series, lags=n)
+    model_fitted = model.fit()
+    
+    # Return the fitted parameters and the summary
+    return model_fitted.params, model_fitted.summary()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -187,9 +203,8 @@ if __name__ == '__main__':
     if args.data == 'step_fun':
         data_df = step_fun(10)
     if args.data == 'ar1':
-        data_df = ar1(1000)
-        print(data_df.shape)
-        exit()
+        mu, phi = 0.40, 0.90
+        data_df = ar1(mu, phi, size=1000)
 
     # Normalize the data
     scaler = StandardScaler()
@@ -204,7 +219,7 @@ if __name__ == '__main__':
     n_features_input = data_df.shape[1]
     n_features_gen = data_df.shape[1]
     latent_dim = args.latent_dim
-    n_epochs = 5000
+    n_epochs = 100000
     batch_size = args.batch_size
 
     # Instantiate two empty vectors to store the condition and the input to the GAN
@@ -238,7 +253,7 @@ if __name__ == '__main__':
     best_disc_weights = None
     best_wass_dist = float('inf')
     patience_counter = 0
-    patience = 400
+    patience = 500
 
     logging.info(f"\nHYPERPARAMETERS:\n"
                     f"\tgenerator: {args.type_gen}\n"
@@ -268,7 +283,16 @@ if __name__ == '__main__':
     generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, True)
     discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, True, args.loss)
     if args.type_disc == 'dense':
-        layers_to_extract = [3+6*i for i in range(args.n_layers_disc)]
+        if args.skip_connection:
+            layers_to_extract = [7+8*i for i in range(args.n_layers_disc)]
+        else:
+            layers_to_extract = [7+6*i for i in range(args.n_layers_disc)]
+        layers_to_extract.append(len(discriminator_model.layers)-2)
+    if args.type_disc == 'lstm':
+        layers_to_extract = [4+4*i for i in range(args.n_layers_disc)]
+        layers_to_extract.append(len(discriminator_model.layers)-2)
+    if args.type_disc == 'conv':
+        layers_to_extract = [4+4*i for i in range(args.n_layers_disc)]
         layers_to_extract.append(len(discriminator_model.layers)-2)
     feature_extractor = build_feature_extractor(discriminator_model, [i for i in layers_to_extract])
 
@@ -306,15 +330,15 @@ if __name__ == '__main__':
             j += 1
         logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
 
-        if epoch % 10 == 0 and epoch > 0:
+        if epoch % 25 == 0 and epoch > 0:
             summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, metrics, job_id, args)
 
         if epoch % 25 == 0 and epoch > 0:
             logging.info(f'Plotting the W1 distances at epoch {epoch}...')
-            W1_tr = overall_wasserstein_distance(generator_model, dataset_train, noise_train)
+            W1_tr, gen_samples_train = overall_wasserstein_distance(generator_model, dataset_train, noise_train)
             W1_train.append(W1_tr)
             noise_val = tf.random.normal([input_train.shape[0], T_gen*latent_dim, n_features_gen])
-            W1_v = overall_wasserstein_distance(generator_model, dataset_train, noise_val)
+            W1_v, gen_samples_val = overall_wasserstein_distance(generator_model, dataset_train, noise_val)
             W1_val.append(W1_v)
             plt.figure(figsize=(10, 6), tight_layout=True)
             plt.plot(W1_train, label='Train')
@@ -325,18 +349,25 @@ if __name__ == '__main__':
             plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/1_wasserstein_distance.png')
             logging.info('Done.')
 
-        if epoch % 10 == 0 and epoch > 0:
+        if epoch % 100 == 0 and epoch > 0:
             logging.info(f'Plotting generated samples by the GAN at epoch {epoch}...')
             features = data_df.columns
             plot_samples(dataset_train, generator_model, features, T_gen, n_features_gen, job_id, epoch, args)
             logging.info('Done.')
 
+            if args.data == 'ar1':
+                logging.info('Fitting and AR(1) model to the generated samples...')
+                logging.info(f'Real parameters:\n\tmu: {mu}\n\tphi: {phi}')
+                for i in range(n_features_gen):
+                    params, summary = fit_ARn(gen_samples_train, 1)
+                    logging.info(f'Generated parameters: \n\tmu: {params[0]:.2f}\n\tphi: {params[1]:.2f}\n')
+                logging.info('Done.')
             logging.info('Saving the models...')
-            generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.keras')
-            discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.keras')
+            generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.keras', save_format='h5')
+            discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.keras', save_format='h5')
             logging.info('Done')
 
-        if epoch > 3000:
+        if epoch > 50000:
             logging.info('Check Early Stopping Criteria...')
             if W1_val[-1] + 5e-4 < best_wass_dist:
                 logging.info(f'Wasserstein distance improved from {best_wass_dist} to {W1_train}')
@@ -409,3 +440,7 @@ if __name__ == '__main__':
     tf.keras.backend.clear_session()
     sys.exit()
 
+
+'''TODO
+- Compute correlation between Y_real(t) and Y_gen(t+k) for k=1,..,N. Thi will give me
+an idea of whether or not the generator takes the data and just shift it. '''

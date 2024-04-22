@@ -669,9 +669,9 @@ def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_
     
     means_real, means_gen, p_values = [], [], []
     # Distribution of the generated samples
-    fig, axes = plt.subplots(n_features_gen, 1, figsize=(10, 10), tight_layout=True)
+    fig, axes = plt.subplots(n_features_gen, 1, figsize=(13, 10), tight_layout=True)
     # Time series sample
-    fig1, axes1 = plt.subplots(n_features_gen, 1, figsize=(10, 10), tight_layout=True)
+    fig1, axes1 = plt.subplots(n_features_gen, 1, figsize=(13, 10), tight_layout=True)
 
     for i, feature in enumerate(features):
         if not args.synthetic:
@@ -685,8 +685,8 @@ def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_
         means_gen.append(np.mean(d_gen))
         p_values.append(p_value)
         if n_features_gen == 1:
-            axes.plot(d_gen[:1000], label='Generated', alpha=0.85)
-            axes.plot(d_real[:1000], label='Real', alpha=0.85)
+            axes.plot(d_gen[:500], label='Generated', alpha=0.85)
+            axes.plot(d_real[:500], label='Real', alpha=0.85)
             axes.set_title(f'Generated {feature}_{epoch}')
             axes.legend()
             axes1.hist(d_gen, bins=100, label='Generated', alpha=0.75)
