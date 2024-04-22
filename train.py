@@ -39,6 +39,7 @@ if __name__ == '__main__':
     parser.add_argument('-ls', '--loss', help='Loss function (original, wasserstein)', type=str, default='original')
     parser.add_argument('-cl', '--clipping', action='store_true', help='Use or not weight clipping')
     parser.add_argument('-lo', '--load', help='Load a model. The job_id must be provided', type=int, default=0)
+    parser.add_argument('-sy', '--synthetic', action='store_true', help='Use synthetic data')
 
     args = parser.parse_args()
     levels = {'critical': logging.CRITICAL,
@@ -241,17 +242,17 @@ if __name__ == '__main__':
     for epoch in range(n_epochs):
         if epoch % 10 == 0:
             logging.info(f'Epoch: {epoch}/{n_epochs}')
+            start = time.time()
 
         # Create the noise for the generator
         noise_train = tf.random.normal([input_train.shape[0], T_gen*latent_dim, n_features_gen])
         j = 0
-        start = time.time()
         for batch_condition, batch_real_samples in dataset_train:
             batch_size = batch_real_samples.shape[0]
             noise = noise_train[j*batch_size:(j+1)*batch_size]
             gen_samples_train, real_output, fake_output, discriminator_loss, generator_loss = train_step(batch_real_samples, batch_condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, args.loss, batch_size, j)
             j += 1
-        logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
+        if epoch % 10 == 0: logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
 
         # Summarize performance at each epoch
         if epoch % int(delta_monitor/2) == 0 and epoch > 0:
@@ -259,10 +260,10 @@ if __name__ == '__main__':
 
         if epoch % delta_monitor == 0 and epoch > 0:
             logging.info(f'Plotting the W1 distances at epoch {epoch}...')
-            W1_tr = overall_wasserstein_distance(generator_model, dataset_train, noise_train)
+            W1_tr, gen_samples_train = overall_wasserstein_distance(generator_model, dataset_train, noise_train)
             W1_train.append(W1_tr)
             noise_val = tf.random.normal([input_train.shape[0], T_gen*latent_dim, n_features_gen])
-            W1_v = overall_wasserstein_distance(generator_model, dataset_train, noise_val)
+            W1_v, gen_samples_val  = overall_wasserstein_distance(generator_model, dataset_train, noise_val)
             W1_val.append(W1_v)
             plt.figure(figsize=(10, 6), tight_layout=True)
             plt.plot(W1_train, label='Train')
@@ -311,8 +312,8 @@ if __name__ == '__main__':
                 logging.info(f'Early stopping criterion not met. Patience counter:\n\t{patience_counter}')
 
         # Memory management
-        log_gpu_memory()
-        log_memory_usage()
+        # log_gpu_memory()
+        # log_memory_usage()
         free_memory()
 
         if patience_counter >= patience:

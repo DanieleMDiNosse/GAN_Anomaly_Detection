@@ -19,7 +19,7 @@ latent_dim=$(($depth*25))
 # synthetic should be passed if you are testing on synthetic data
 # clipping should be passed if you want to clip the gradients of the discriminator
 
-python train_synthetic.py -d=$data -bs=$batch_size -ld=$latent_dim -tg=$type_gen -td=$type_disc -nlg=$n_layers_gen -nld=$n_layers_disc -ls=$loss -Tc=$T_condition -Tg=$T_gen  --clipping --skip_connection
+python train_synthetic.py -d=$data -bs=$batch_size -ld=$latent_dim -tg=$type_gen -td=$type_disc -nlg=$n_layers_gen -nld=$n_layers_disc -ls=$loss -Tc=$T_condition -Tg=$T_gen  --clipping --skip_connection --synthetic
 
 
 
