@@ -130,6 +130,8 @@ if __name__ == '__main__':
     parser.add_argument("-l", "--log", default="info",
                         help=("Provide logging level. Example --log debug', default='info'"))
     parser.add_argument('-d', '--data', help='Type of synthetic data to generate (sine, ar1_sine, step_fun, ar1)', type=str, default='sine')
+    parser.add_argument('-e', '--n_epochs', help='Number of epochs', type=int, default=10000)
+    parser.add_argument('-c', '--conditional', action='store_true', help='Use or not conditional GAN. The default is False')
     parser.add_argument('-bs', '--batch_size', help='Batch size', type=int)
     parser.add_argument('-ld', '--latent_dim', help='Latent dimension', type=int)
     parser.add_argument('-nlg', '--n_layers_gen', help='Number of generator layers', type=int)
@@ -219,7 +221,7 @@ if __name__ == '__main__':
     n_features_input = data_df.shape[1]
     n_features_gen = data_df.shape[1]
     latent_dim = args.latent_dim
-    n_epochs = 100000
+    n_epochs = args.n_epochs
     batch_size = args.batch_size
 
     # Instantiate two empty vectors to store the condition and the input to the GAN
@@ -261,6 +263,7 @@ if __name__ == '__main__':
                     f"\tn_layers_gen: {args.n_layers_gen}\n"
                     f"\tn_layers_disc: {args.n_layers_disc}\n"
                     f"\tskip_connection: {args.skip_connection}\n"
+                    f"\tconditional: {args.conditional}\n"
                     f"\tlatent_dim per time: {latent_dim}\n"
                     f"\tn_features_input: {n_features_input}\n"
                     f"\tn_features_gen: {n_features_gen}\n"
@@ -280,13 +283,19 @@ if __name__ == '__main__':
     optimizer = [generator_optimizer, discriminator_optimizer]
 
     # Build the models
-    generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, True)
-    discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, True, args.loss)
+    generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, args.conditional)
+    discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, args.conditional, args.loss)
     if args.type_disc == 'dense':
         if args.skip_connection:
-            layers_to_extract = [7+8*i for i in range(args.n_layers_disc)]
+            if args.conditional:
+                layers_to_extract = [7+8*i for i in range(args.n_layers_disc)]
+            else:
+                layers_to_extract = [4+4*i for i in range(args.n_layers_disc)]
         else:
-            layers_to_extract = [7+6*i for i in range(args.n_layers_disc)]
+            if args.conditional:
+                layers_to_extract = [7+6*i for i in range(args.n_layers_disc)]
+            else:
+                layers_to_extract = [4+3*i for i in range(args.n_layers_disc)]
         layers_to_extract.append(len(discriminator_model.layers)-2)
     if args.type_disc == 'lstm':
         layers_to_extract = [4+4*i for i in range(args.n_layers_disc)]
@@ -307,8 +316,14 @@ if __name__ == '__main__':
 
     # Train the GAN.
     logging.info('\n[Training] ---------- START TRAINING ----------')
-    dataset_train = tf.data.Dataset.from_tensor_slices((condition_train, input_train)).batch(batch_size)
+    if args.conditional == True:
+        dataset_train = tf.data.Dataset.from_tensor_slices((condition_train, input_train)).batch(batch_size)
+    else:
+        dataset_train = tf.data.Dataset.from_tensor_slices(input_train).batch(batch_size)
     dataset_train = dataset_train.prefetch(tf.data.experimental.AUTOTUNE)
+    # for batch in dataset_train:
+    #     logging.info(f'{batch}')
+    # exit()
 
     num_batches = len(dataset_train)
     logging.info(f'Number of batches:\n\t{num_batches}\n')
@@ -324,10 +339,17 @@ if __name__ == '__main__':
         # Create the noise for the generator
         noise_train = tf.random.normal([input_train.shape[0], T_gen*latent_dim, n_features_gen])
         j = 0
-        for batch_condition, batch_real_samples in dataset_train:
+        for batch in dataset_train:
+            if args.conditional == True:
+                batch_condition, batch_real_samples = batch
+            else:
+                batch_real_samples = batch
             batch_size = batch_real_samples.shape[0]
             noise = noise_train[j*batch_size:(j+1)*batch_size]
-            gen_samples_train, real_output, fake_output, discriminator_loss, generator_loss = train_step(batch_real_samples, batch_condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, args.loss, batch_size, args.clipping)
+            if args.conditional:
+                gen_samples_train, real_output, fake_output, discriminator_loss, generator_loss = train_step(batch_real_samples, batch_condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, args.loss, batch_size, args.clipping)
+            else:
+                gen_samples_train, real_output, fake_output, discriminator_loss, generator_loss = train_step_unconditional(batch_real_samples, generator_model, noise, discriminator_model, feature_extractor, optimizer, args.loss, batch_size, args.clipping)
             j += 1
         if epoch % delta_monitor == 0: logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
 
@@ -336,10 +358,10 @@ if __name__ == '__main__':
 
         if epoch % delta_monitor == 0 and epoch > 0:
             logging.info(f'Plotting the W1 distances at epoch {epoch}...')
-            W1_tr, gen_samples_train = overall_wasserstein_distance(generator_model, dataset_train, noise_train)
+            W1_tr, gen_samples_train = overall_wasserstein_distance(generator_model, dataset_train, noise_train, args.conditional)
             W1_train.append(W1_tr)
             noise_val = tf.random.normal([input_train.shape[0], T_gen*latent_dim, n_features_gen])
-            W1_v, gen_samples_val = overall_wasserstein_distance(generator_model, dataset_train, noise_val)
+            W1_v, gen_samples_val = overall_wasserstein_distance(generator_model, dataset_train, noise_val, args.conditional)
             W1_val.append(W1_v)
             plt.figure(figsize=(10, 6), tight_layout=True)
             plt.plot(W1_train, label='Train')

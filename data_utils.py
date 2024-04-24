@@ -649,20 +649,36 @@ def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_
     generated_samples = []
     real_samples = []
 
-    for batch_condition, batch in dataset:
-        noise = tf.random.normal([batch_condition.shape[0], T_gen*args.latent_dim, batch.shape[2]])
-        # logging.info(f'LOB at t:\n{batch_condition}\n')
-        # logging.info(f'LOB at t+1:\n{batch}\n')
-        gen_sample = generator_model([noise, batch_condition])
-        # logging.info(f'Generated LOB at t+1:\n{gen_sample}\n')
-        # logging.info('-----------------------------------------------------------------')
-        if not args.synthetic:
-            gen_sample = transform_and_reshape(gen_sample, T_gen, n_features_gen)
-            batch = transform_and_reshape(batch, T_gen, n_features_gen)
-        for i in range(gen_sample.shape[0]):
-            # All the appended samples will be of shape (T_gen, n_features_gen)
-            generated_samples.append(gen_sample[i, -1, :])
-            real_samples.append(batch[i, -1, :])
+    if args.conditional:
+        for batch_condition, batch in dataset:
+            noise = tf.random.normal([batch_condition.shape[0], T_gen*args.latent_dim, batch.shape[2]])
+            # logging.info(f'LOB at t:\n{batch_condition}\n')
+            # logging.info(f'LOB at t+1:\n{batch}\n')
+            gen_sample = generator_model([noise, batch_condition])
+            # logging.info(f'Generated LOB at t+1:\n{gen_sample}\n')
+            # logging.info('-----------------------------------------------------------------')
+            if not args.synthetic:
+                gen_sample = transform_and_reshape(gen_sample, T_gen, n_features_gen)
+                batch = transform_and_reshape(batch, T_gen, n_features_gen)
+            for i in range(gen_sample.shape[0]):
+                # All the appended samples will be of shape (T_gen, n_features_gen)
+                generated_samples.append(gen_sample[i, -1, :])
+                real_samples.append(batch[i, -1, :])
+    else:
+        for batch in dataset:
+            noise = tf.random.normal([batch_condition.shape[0], T_gen*args.latent_dim, batch[0].shape[2]])
+            # logging.info(f'LOB at t:\n{batch_condition}\n')
+            # logging.info(f'LOB at t+1:\n{batch}\n')
+            gen_sample = generator_model(noise)
+            # logging.info(f'Generated LOB at t+1:\n{gen_sample}\n')
+            # logging.info('-----------------------------------------------------------------')
+            if not args.synthetic:
+                gen_sample = transform_and_reshape(gen_sample, T_gen, n_features_gen)
+                batch = transform_and_reshape(batch, T_gen, n_features_gen)
+            for i in range(gen_sample.shape[0]):
+                # All the appended samples will be of shape (T_gen, n_features_gen)
+                generated_samples.append(gen_sample[i, -1, :])
+                real_samples.append(batch[i, -1, :])
 
     generated_samples = np.array(generated_samples)
     real_samples = np.array(real_samples)

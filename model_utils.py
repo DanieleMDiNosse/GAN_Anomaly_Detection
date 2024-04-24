@@ -81,7 +81,7 @@ def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, nu
                 x_c = lstm_block(x_c, units=n_nodes[i], skip_connections=skip_connections)
             x_c = layers.Flatten()(x_c)
     else:
-        T_gen = T_gen + T_condition
+        T_gen = T_gen# + T_condition
 
     input = layers.Input(shape=(T_gen, num_features_gen), name='input')
 
@@ -141,7 +141,7 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
                 x_c = lstm_block(x_c, units=n_nodes[i], skip_connections=skip_connections)
             x_c = layers.Flatten()(x_c)
     else:
-        T_gen = T_gen + T_condition
+        T_gen = T_gen# + T_condition
 
     input = layers.Input(shape=(T_gen*latent_dim, num_features_gen), name='input')
 
@@ -180,7 +180,7 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
     return generator_model
 
 # @tf.function
-def train_step(real_samples, condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, loss, batch_size, clipping):#, num_batches, j, job_id, epoch, metrics, args):
+def train_step(real_samples, condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, loss, batch_size, clipping):
     discriminator_optimizer = optimizer[0]
     generator_optimizer = optimizer[1]
 
@@ -247,7 +247,62 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
     del gen_tape
     del disc_tape
 
-    return generated_samples, real_output, fake_output, discriminator_loss, generator_loss#, generator_model, discriminator_model
+    return generated_samples, real_output, fake_output, discriminator_loss, generator_loss
+
+def train_step_unconditional(real_samples, generator_model, noise, discriminator_model, feature_extractor, optimizer, loss, batch_size, clipping):
+    discriminator_optimizer = optimizer[0]
+    generator_optimizer = optimizer[1]
+
+    if loss == 'original' or loss == 'original_fm':
+        disc_step = 1
+    elif loss == 'wasserstein':
+        disc_step = 5
+
+    # Discriminator training
+    for _ in range(disc_step):
+        with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
+            generated_samples = generator_model(noise, training=True)
+            real_output = discriminator_model(real_samples, training=True)
+            fake_output = discriminator_model(generated_samples, training=True)
+
+            if loss == 'original' or loss == 'original_fm':
+                discriminator_loss = compute_discriminator_loss(real_output, fake_output)
+            # elif loss == 'wasserstein':
+            #     # The critic in a WGAN is trained to output higher scores for real data and lower scores for generated data
+            #     discriminator_loss = wasserstein_loss([real_output, fake_output])
+            #     gp = gradient_penalty(discriminator_model, batch_size, real_samples, generated_samples)
+            #     discriminator_loss += 10.0 * gp
+
+        gradients_of_discriminator = disc_tape.gradient(discriminator_loss, discriminator_model.trainable_variables)
+        if clipping == True:
+        # Clip the gradients to stabilize training
+            gradients_of_discriminator = [tf.clip_by_norm(g, clip_norm=1) if g is not None else None for g in gradients_of_discriminator]
+        discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator_model.trainable_variables))
+
+    # Generator training
+    with tf.GradientTape() as gen_tape:
+        generated_samples = generator_model(noise, training=True)
+        fake_output = discriminator_model(generated_samples , training=True)
+        real_features_list = feature_extractor(real_samples )
+        generated_features_list = feature_extractor(generated_samples)
+
+        if loss == 'original':
+            generator_loss = compute_generator_loss(fake_output)
+        elif loss == 'original_fm':
+            generator_loss = compute_generator_loss(fake_output)
+            fm_loss = compute_feature_matching_loss(real_features_list, generated_features_list)
+            generator_loss += fm_loss
+        elif loss == 'wasserstein':
+            generator_loss = wasserstein_loss(fake_output)
+
+    gradients_of_generator = gen_tape.gradient(generator_loss, generator_model.trainable_variables)
+    generator_optimizer.apply_gradients(zip(gradients_of_generator, generator_model.trainable_variables))
+
+    # Delete the tape to free resources
+    del gen_tape
+    del disc_tape
+
+    return generated_samples, real_output, fake_output, discriminator_loss, generator_loss
 
 def build_feature_extractor(discriminator, layer_indices):
     '''Build a feature extractor model from the discriminator model. This model will be used to compute the feature matching loss.'''
@@ -336,20 +391,30 @@ def summarize_performance(real_output, fake_output, discriminator_loss, gen_loss
     plt.close('all')
     return None
 
-def overall_wasserstein_distance(generator_model, dataset_train, noise):
+def overall_wasserstein_distance(generator_model, dataset_train, noise, conditional):
     gen_samples = []
     real_samples = []
     
     j = 0
     # Generate all the samples
-    for batch_condition, _ in dataset_train:
-        batch_size = batch_condition.shape[0]
-        gen_sample = generator_model([noise[j*batch_size:(j+1)*batch_size], batch_condition])
-        j += 1
-        for i in range(gen_sample.shape[0]):
-            # All the appended samples will be of shape (T_gen, n_features_gen)
-            gen_samples.append(gen_sample[i, -1, :].numpy())
-            real_samples.append(batch_condition[i, -1, :].numpy())
+    if conditional:
+        for batch_condition, _ in dataset_train:
+            batch_size = batch_condition.shape[0]
+            gen_sample = generator_model([noise[j*batch_size:(j+1)*batch_size], batch_condition])
+            j += 1
+            for i in range(gen_sample.shape[0]):
+                # All the appended samples will be of shape (T_gen, n_features_gen)
+                gen_samples.append(gen_sample[i, -1, :].numpy())
+                real_samples.append(batch_condition[i, -1, :].numpy())
+    else:
+        for batch in dataset_train:
+            batch_size = batch[0].shape[0]
+            gen_sample = generator_model(noise[j*batch_size:(j+1)*batch_size])
+            j += 1
+            for i in range(gen_sample.shape[0]):
+                # All the appended samples will be of shape (T_gen, n_features_gen)
+                gen_samples.append(gen_sample[i, -1, :].numpy())
+                real_samples.append(batch_condition[i, -1, :].numpy())
 
     gen_samples = np.array(gen_samples)
     real_samples = np.array(real_samples)

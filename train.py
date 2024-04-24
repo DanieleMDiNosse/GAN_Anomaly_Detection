@@ -27,6 +27,7 @@ if __name__ == '__main__':
     parser.add_argument('-dt', '--date', type=str, help='Date in the folder name')
     parser.add_argument('-N', '--N_days', type=int, help='Number of the day to consider')
     parser.add_argument('-d', '--depth', help='Depth of the orderbook', type=int)
+    parser.add_argument('-e', '--n_epochs', help='Number of epochs', type=int, default=100000)
     parser.add_argument('-bs', '--batch_size', help='Batch size', type=int)
     parser.add_argument('-ld', '--latent_dim', help='Latent dimension', type=int)
     parser.add_argument('-nlg', '--n_layers_gen', help='Number of generator layers', type=int)
@@ -124,7 +125,7 @@ if __name__ == '__main__':
     n_features_input = orderbook_df.shape[1]
     n_features_gen = 2*depth
     latent_dim = args.latent_dim
-    n_epochs = 5000
+    n_epochs = args.n_epochs
     batch_size = args.batch_size
 
     # Define the parameters for the early stopping criterion
