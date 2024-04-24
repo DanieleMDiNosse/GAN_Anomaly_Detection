@@ -41,6 +41,7 @@ if __name__ == '__main__':
     parser.add_argument('-cl', '--clipping', action='store_true', help='Use or not weight clipping')
     parser.add_argument('-lo', '--load', help='Load a model. The job_id must be provided', type=int, default=0)
     parser.add_argument('-sy', '--synthetic', action='store_true', help='Use synthetic data')
+    parser.add_argument('-c', '--conditional', action='store_true', help='Use conditional GAN')
 
     args = parser.parse_args()
     levels = {'critical': logging.CRITICAL,
@@ -177,6 +178,7 @@ if __name__ == '__main__':
                     f"\tn_layers_gen: {args.n_layers_gen}\n"
                     f"\tn_layers_disc: {args.n_layers_disc}\n"
                     f"\tskip_connection: {args.skip_connection}\n"
+                    f"\tconditional: {args.conditional}\n"
                     f"\tlatent_dim per time: {latent_dim}\n"
                     f"\tn_features_input: {n_features_input}\n"
                     f"\tn_features_gen: {n_features_gen}\n"
@@ -261,10 +263,10 @@ if __name__ == '__main__':
 
         if epoch % delta_monitor == 0 and epoch > 0:
             logging.info(f'Plotting the W1 distances at epoch {epoch}...')
-            W1_tr, gen_samples_train = overall_wasserstein_distance(generator_model, dataset_train, noise_train)
+            W1_tr, gen_samples_train = overall_wasserstein_distance(generator_model, dataset_train, noise_train, conditional=args.conditional)
             W1_train.append(W1_tr)
             noise_val = tf.random.normal([input_train.shape[0], T_gen*latent_dim, n_features_gen])
-            W1_v, gen_samples_val  = overall_wasserstein_distance(generator_model, dataset_train, noise_val)
+            W1_v, gen_samples_val  = overall_wasserstein_distance(generator_model, dataset_train, noise_val, conditional=args.conditional)
             W1_val.append(W1_v)
             plt.figure(figsize=(10, 6), tight_layout=True)
             plt.plot(W1_train, label='Train')

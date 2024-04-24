@@ -211,7 +211,12 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
             fake_output = discriminator_model([generated_samples, condition], training=True)
 
             if loss == 'original' or loss == 'original_fm':
+                c = 1
+                for r_sample in real_samples:
+                    if tf.reduce_sum(tf.sign(r_sample)) != 0:
+                        c += 1
                 discriminator_loss = compute_discriminator_loss(real_output, fake_output)
+                discriminator_loss *= c/2
             elif loss == 'wasserstein':
                 # The critic in a WGAN is trained to output higher scores for real data and lower scores for generated data
                 discriminator_loss = wasserstein_loss([real_output, fake_output])
@@ -397,8 +402,8 @@ def overall_wasserstein_distance(generator_model, dataset_train, noise, conditio
     
     j = 0
     # Generate all the samples
-    if conditional:
-        for batch_condition, _ in dataset_train:
+    if conditional == True:
+        for batch_condition, batch in dataset_train:
             batch_size = batch_condition.shape[0]
             gen_sample = generator_model([noise[j*batch_size:(j+1)*batch_size], batch_condition])
             j += 1
@@ -414,11 +419,11 @@ def overall_wasserstein_distance(generator_model, dataset_train, noise, conditio
             for i in range(gen_sample.shape[0]):
                 # All the appended samples will be of shape (T_gen, n_features_gen)
                 gen_samples.append(gen_sample[i, -1, :].numpy())
-                real_samples.append(batch_condition[i, -1, :].numpy())
+                real_samples.append(batch[i, -1, :].numpy())
 
     gen_samples = np.array(gen_samples)
     real_samples = np.array(real_samples)
-    n_features_gen = batch_condition.shape[2]
+    n_features_gen = batch.shape[2]
     W_features = []
     for feature in range(n_features_gen):
         w = wasserstein_distance(real_samples[:, feature], gen_samples[:, feature])

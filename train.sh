@@ -21,7 +21,7 @@ n_epochs=100000
 # skip_connectionis False if not passed, True if passed
 # clipping (data) False if not passed, True if passed
 
-python train.py -s=$stock -dt=$date -N=$N_days --n_epochs=$n_epochs -bs=$batch_size -d=$depth -ld=$latent_dim -tg=$type_gen -td=$type_disc -nlg=$n_layers_gen -nld=$n_layers_disc -ls=$loss -Tc=$T_condition -Tg=$T_gen --skip_connection --clipping 
+python train.py -s=$stock -dt=$date -N=$N_days --n_epochs=$n_epochs -bs=$batch_size -d=$depth -ld=$latent_dim -tg=$type_gen -td=$type_disc -nlg=$n_layers_gen -nld=$n_layers_disc -ls=$loss -Tc=$T_condition -Tg=$T_gen --skip_connection --clipping --conditional
 
 
 
