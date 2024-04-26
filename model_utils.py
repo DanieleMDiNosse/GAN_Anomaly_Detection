@@ -211,12 +211,7 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
             fake_output = discriminator_model([generated_samples, condition], training=True)
 
             if loss == 'original' or loss == 'original_fm':
-                c = 1
-                for r_sample in real_samples:
-                    if tf.reduce_sum(tf.sign(r_sample)) != 0:
-                        c += 1
                 discriminator_loss = compute_discriminator_loss(real_output, fake_output)
-                discriminator_loss *= c/2
             elif loss == 'wasserstein':
                 # The critic in a WGAN is trained to output higher scores for real data and lower scores for generated data
                 discriminator_loss = wasserstein_loss([real_output, fake_output])
@@ -239,9 +234,13 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
         if loss == 'original':
             generator_loss = compute_generator_loss(fake_output)
         elif loss == 'original_fm':
+            c = 1
+            for r_sample in real_samples:
+                if tf.reduce_sum(tf.sign(r_sample)) != 0:
+                    c += 1
             generator_loss = compute_generator_loss(fake_output)
             fm_loss = compute_feature_matching_loss(real_features_list, generated_features_list)
-            generator_loss += fm_loss
+            generator_loss += fm_loss + 0.5 * c
         elif loss == 'wasserstein':
             generator_loss = wasserstein_loss(fake_output)
 
@@ -313,7 +312,7 @@ def build_feature_extractor(discriminator, layer_indices):
     '''Build a feature extractor model from the discriminator model. This model will be used to compute the feature matching loss.'''
     outputs = [discriminator.layers[i].output for i in layer_indices]
     for output in outputs:
-        logging.info(f'Extracted feature from layer with shape: {output.shape}')
+        logging.info(f'Feature Extractor: Extracted feature from layer with shape: {output.shape}')
     return tf.keras.Model(discriminator.input, outputs)
 
 # @tf.function

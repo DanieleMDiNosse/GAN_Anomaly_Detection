@@ -53,12 +53,11 @@ if __name__ == '__main__':
     # Print the current date and time
     current_datetime = pd.Timestamp.now()
     formatted_datetime = current_datetime.strftime("%Y-%m-%d_%H-%M-%S")
-    job_id = formatted_datetime
 
-    # if os.getenv("PBS_JOBID") != None:
-    #     job_id = os.getenv("PBS_JOBID")
-    # else:
-    #     job_id = os.getpid()
+    if os.getenv("PBS_JOBID") != None:
+        job_id = f'{os.getenv("PBS_JOBID")}_{formatted_datetime}'
+    else:
+        job_id = f'{os.getpid()}_{formatted_datetime}'
 
     if not os.path.exists('logs'):
         os.mkdir('logs')
@@ -70,11 +69,6 @@ if __name__ == '__main__':
 
     # Set the seed for TensorFlow to the number of the beast
     tf.random.set_seed(666)
-
-    # # Print the current date and time
-    # current_datetime = pd.Timestamp.now()
-    # formatted_datetime = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
-    # logging.info(f"Current Date and Time:\n\t {formatted_datetime}")
 
     # Enable device placement logging
     tf.debugging.set_log_device_placement(True)
@@ -136,9 +130,9 @@ if __name__ == '__main__':
     patience_counter = 0
     patience = 1000
 
-    if not os.path.exists(f'../data/{stock}_{date}/input_train_{stock}_{window_size}_{N}days_orderbook.npy'):
+    if not os.path.exists(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_{N}days_orderbook_.npy'):
         logging.info('\n[Input&Condition] ---------- CREATING INPUT AND CONDITION ----------')
-        logging.info('\nDividing each window into condition and input...')
+        logging.info('Dividing each window (T_gen+T_condition) into condition and input...')
         condition_train = np.zeros((orderbook_df.shape[0]//2, T_condition, n_features_input))
         input_train = np.zeros((orderbook_df.shape[0]//2, T_gen, n_features_input))
 
@@ -150,13 +144,13 @@ if __name__ == '__main__':
         logging.info(f'condition_train shape:\n\t{condition_train.shape}')
         logging.info('Done.')
 
-        logging.info('\nSave the files...')
+        logging.info('\nSave the condition_input and input_train .npy files...')
         np.save(f'../data/{stock}_{date}/miscellaneous/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', condition_train)
         np.save(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_{N}days_orderbook.npy', input_train)
         logging.info('Done.')
-        logging.info('\n[Input&Condtion] --------------- DONE ---------------\n')
+        logging.info('[Input&Condtion] --------------- DONE ---------------\n')
 
-    elif os.path.exists(f'../data/{stock}_{date}/input_train_{stock}_{window_size}_{N}days_orderbook.npy'):
+    elif os.path.exists(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_{N}days_orderbook.npy'):
         logging.info('Loading input_train and condition_train...')
         input_train = np.load(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
         condition_train = np.load(f'../data/{stock}_{date}/miscellaneous/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
@@ -166,7 +160,7 @@ if __name__ == '__main__':
         logging.info('Done.')
 
     # Create bar plots showing the empirical distribution of the LOB snapshots at time t and t+1
-    logging.info('Creating bar plots showing the empirical distribution of the LOB snapshots at time t and t+1...')
+    logging.info('Creating bar plots showing the empirical distribution of the LOB snapshots at time t and t+T_gen...')
     bar_plot_levels(stock, date, N, window_size, c=10)
     logging.info('Done.')
 
@@ -180,15 +174,15 @@ if __name__ == '__main__':
                     f"\tskip_connection: {args.skip_connection}\n"
                     f"\tconditional: {args.conditional}\n"
                     f"\tlatent_dim per time: {latent_dim}\n"
+                    f"\tbatch_size: {batch_size} (num_batches: {input_train.shape[0]//batch_size})\n"
+                    f"\tT_condition: {T_condition}\n"
+                    f"\tT_gen: {T_gen}\n"
+                    f"\tloss: {args.loss}\n"
+                    f"\tpatience: {patience}\n"
                     f"\tn_features_input: {n_features_input}\n"
                     f"\tn_features_gen: {n_features_gen}\n"
                     f"\tfeatures: {orderbook_df.columns}\n"
                     f"\tn_epochs: {n_epochs}\n"
-                    f"\tT_condition: {T_condition}\n"
-                    f"\tT_gen: {T_gen}\n"
-                    f"\tbatch_size: {batch_size} (num_batches: {input_train.shape[0]//batch_size})\n"
-                    f"\tloss: {args.loss}\n"
-                    f"\tpatience: {patience}\n"
                     f"\tjob_id: {job_id}\n"
                     f"\tLoaded model: {None if args.load==0 else args.load}\n")
 
@@ -197,10 +191,14 @@ if __name__ == '__main__':
     discriminator_optimizer = tf.keras.optimizers.Adam(learning_rate=0.00001)
     optimizer = [generator_optimizer, discriminator_optimizer]
 
+    logging.info('\n[Model] ---------- BUILDING MODELS ----------')
     if args.load == 0:
         # Build the models
+        logging.info('Building the generator model...')
         generator_model = build_generator(args.n_layers_gen, args.type_gen, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, latent_dim, True)
+        logging.info('Building the discriminator model...')
         discriminator_model = build_discriminator(args.n_layers_disc, args.type_disc, args.skip_connection, T_gen, T_condition, n_features_input, n_features_gen, True, args.loss)
+        logging.info('Building the feature extractor...')
         if args.type_disc == 'dense':
             if args.skip_connection:
                 layers_to_extract = [7+8*i for i in range(args.n_layers_disc)]
@@ -217,9 +215,12 @@ if __name__ == '__main__':
     else:
         prev_job_id = args.load
         # Load the models
+        logging.info(f'Loading the models from job_id {prev_job_id}...')
         generator_model = tf.keras.models.load_model(f'models/{prev_job_id}.pbs01_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.h5')
         discriminator_model = tf.keras.models.load_model(f'models/{prev_job_id}.pbs01_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.h5')
         feature_extractor = build_feature_extractor(discriminator_model, [i for i in range(1, args.n_layers_disc)])
+        logging.info('Done.')
+    logging.info('[Model] --------------- DONE ---------------\n')
 
 
     logging.info('\n[Model] ---------- MODEL SUMMARIES ----------')
@@ -258,7 +259,7 @@ if __name__ == '__main__':
         if epoch % 10 == 0: logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
 
         # Summarize performance at each epoch
-        if epoch % int(delta_monitor/2) == 0 and epoch > 0:
+        if epoch % delta_monitor == 0 and epoch > 0:
             summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, metrics, job_id, args)
 
         if epoch % delta_monitor == 0 and epoch > 0:
@@ -277,7 +278,7 @@ if __name__ == '__main__':
             plt.savefig(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/1_wasserstein_distance.png')
             logging.info('Done.')
 
-        if epoch % (delta_monitor*5) == 0 and epoch > 0:
+        if epoch % (delta_monitor*10) == 0 and epoch > 0:
             logging.info(f'Plotting generated samples by the GAN at epoch {epoch}...')
             features = orderbook_df.columns
             plot_samples(dataset_train, generator_model, features, T_gen, n_features_gen, job_id, epoch, args)

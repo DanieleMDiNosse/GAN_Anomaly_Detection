@@ -224,7 +224,7 @@ def LOB_snapshots(orderbook, k, m, n):
     Note: here we suppose the spread is always of size equal to one tick.
     '''
     length = orderbook.shape[0]
-    logging.info(f'Length of the original orderbook datafrme:\n\t{length}')
+    # logging.info(f'Length of the original orderbook datafrme:\n\t{length}')
     # the additional column 2k+1 is used to track the price change.
     # The lenght is set to 2*length because I want to learn the transition probability p(X(t+1)|X(t))
     # where X(t+1) becames X(t) at the next time step.
@@ -331,7 +331,7 @@ def compute_spread(orderbook):
     spread = orderbook['Ask price 0'] - orderbook['Bid price 0']
     values, counts = np.unique(spread, return_counts=True)
     for i in range(len(values)):
-        logging.info(f'Spread {values[i]} has {counts[i]} occurrences.\n')
+        logging.info(f'Spread {values[i]} has {counts[i]} occurrences.')
     return spread
 
 def create_LOB_snapshots(stock, date, N, depth, previous_days=False):
@@ -369,7 +369,7 @@ def create_LOB_snapshots(stock, date, N, depth, previous_days=False):
     if previous_days:
         orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][:N]
         message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][:N]
-        logging.info(f'Loaded {N} days of data')
+        logging.info(f'Loaded {N+1} days of data')
         logging.info(f'Original shape of the dataframes:\n\t{orderbook_dfs[0].shape}')
         # Preprocess the data using preprocessing_orderbook_df
         orderbook_dfs, _ = zip(*[(preprocessing_orderbook_df(df, msg, sampling_seconds=2, discard_time=1800)) for df, msg in zip(orderbook_dfs, message_dfs)])
@@ -378,10 +378,11 @@ def create_LOB_snapshots(stock, date, N, depth, previous_days=False):
     else:
         orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][N-1]
         message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][N-1]
-        logging.info(f'Loaded {N-1}th day of data')
+        logging.info(f'Loaded {N}th day of data')
         logging.info(f'Original shape of the dataframes:\n\t{orderbook_dfs.shape}')
         orderbook_df, _ = preprocessing_orderbook_df(orderbook_dfs, message_dfs, discard_time=1800)
     
+    logging.info(f'Preprocessed shape of the dataframes:\n\t{orderbook_df.shape}')
     # Compute the spread
     spread = compute_spread(orderbook_df)
     # Save the spread
@@ -402,7 +403,7 @@ def create_LOB_snapshots(stock, date, N, depth, previous_days=False):
     # snapshots_df['spread'] = spread
 
     # Normalize the data
-    snapshots_df = snapshots_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
+    # snapshots_df = snapshots_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
 
     # Save the dataframe
     snapshots_df.to_parquet(f'../data/{stock}_{date}/miscellaneous/snapshots_df_{N}.parquet')
@@ -606,7 +607,7 @@ def transform_and_reshape(tensor, T_gen, n_features, c=10):
         Transformed tensor.
     '''
     tensor_flat = tf.reshape(tensor, [-1, T_gen * n_features]).numpy()
-    tensor_flat = np.array([[x**2 * math.copysign(1, x) for x in row] for row in tensor_flat])*c
+    # tensor_flat = np.array([[x**2 * math.copysign(1, x) for x in row] for row in tensor_flat])*c
     tensor_flat = tf.reshape(tensor_flat, [-1, T_gen, n_features])
     return tensor_flat
 
