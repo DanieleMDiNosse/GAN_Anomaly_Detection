@@ -205,7 +205,7 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
 
     # Discriminator training
     for _ in range(disc_step):
-        with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
+        with tf.GradientTape() as disc_tape:
             generated_samples = generator_model([noise, condition], training=True)
             real_output = discriminator_model([real_samples, condition], training=True)
             fake_output = discriminator_model([generated_samples, condition], training=True)
@@ -234,13 +234,13 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
         if loss == 'original':
             generator_loss = compute_generator_loss(fake_output)
         elif loss == 'original_fm':
-            c = 1
-            for r_sample in real_samples:
-                if tf.reduce_sum(tf.sign(r_sample)) != 0:
-                    c += 1
+            # c = 1
+            # for r_sample in real_samples:
+            #     if tf.reduce_sum(tf.sign(r_sample)) != 0:
+            #         c += 1
             generator_loss = compute_generator_loss(fake_output)
             fm_loss = compute_feature_matching_loss(real_features_list, generated_features_list)
-            generator_loss += fm_loss + 0.5 * c
+            generator_loss += fm_loss #+ 0.5 * c
         elif loss == 'wasserstein':
             generator_loss = wasserstein_loss(fake_output)
 
@@ -338,11 +338,13 @@ def compute_generator_loss(fake_output):
 # @tf.function
 def wasserstein_loss(predictions):
     if len(predictions) == 2:
+        # used for the discriminator
         real_output, fake_output = predictions
         w_real = tf.reduce_mean(real_output)
         w_fake = tf.reduce_mean(fake_output)
         w_tot = w_fake - w_real
     else:
+        # used for the generator
         fake_output = predictions
         w_tot = -tf.reduce_mean(fake_output)
     return w_tot

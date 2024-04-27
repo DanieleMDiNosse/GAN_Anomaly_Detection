@@ -26,6 +26,7 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--stock', type=str, help='Stock to consider')
     parser.add_argument('-dt', '--date', type=str, help='Date in the folder name')
     parser.add_argument('-N', '--N_days', type=int, help='Number of the day to consider')
+    parser.add_argument('-pd', '--previous_days', action='store_true', help='If passed, it will consider days until the Nth one')
     parser.add_argument('-d', '--depth', help='Depth of the orderbook', type=int)
     parser.add_argument('-e', '--n_epochs', help='Number of epochs', type=int, default=100000)
     parser.add_argument('-bs', '--batch_size', help='Batch size', type=int)
@@ -109,7 +110,7 @@ if __name__ == '__main__':
 
     # Create the orderbook dataframe
     logging.info('\n[Data] ---------- CREATING ORDERBOOK SNAPSHOTS ----------')
-    orderbook_df, prices_change = create_LOB_snapshots(stock, date, N, depth, previous_days=False)
+    orderbook_df, prices_change = create_LOB_snapshots(stock, date, N, depth, previous_days=args.previous_days)
     logging.info(f'Orderbook input dataframe shape:\n\t{orderbook_df.shape}')
     logging.info('[Data] --------------- DONE ---------------\n')
 
@@ -161,7 +162,7 @@ if __name__ == '__main__':
 
     # Create bar plots showing the empirical distribution of the LOB snapshots at time t and t+1
     logging.info('Creating bar plots showing the empirical distribution of the LOB snapshots at time t and t+T_gen...')
-    bar_plot_levels(stock, date, N, window_size, c=10)
+    bar_plot_levels(stock, date, N, window_size, c=50)
     logging.info('Done.')
 
     logging.info(f"\nHYPERPARAMETERS:\n"

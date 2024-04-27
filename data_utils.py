@@ -74,8 +74,8 @@ def convert_and_renamecols(dataframes_folder_path):
 
 def preprocessing_orderbook_df(orderbook, message, sampling_seconds=10, discard_time=1800):
     '''This function takes as input the orderbook dataframe provided by LOBSTER.com and preprocessed via
-    convert_and_renamecols and performs the following operations:
-    - Discard the a certain number of first and last rows of the dataframe, since they are likely "non stationary"
+    convert_and_renamecols and then performs the following operations:
+    - Discard a certain number of rows at the beginning and the end of the dataframe, since they are likely "non stationary"
     - Sample the dataframe every 10 seconds
     - Reset the index
     - Drop the columns Order ID and Time
@@ -86,6 +86,8 @@ def preprocessing_orderbook_df(orderbook, message, sampling_seconds=10, discard_
         Orderbook dataframe preprocessed via convert_and_renamecols.
     message : pandas dataframe
         Message dataframe preprocessed via convert_and_renamecols. Used only to take the Time column.
+    sampling_seconds : int
+        Sampling frequency. The default is 10.
     discard_time : int
         Number of seconds to discard from the beginning and the end of the dataframe. The default is 1800.
     
@@ -99,11 +101,13 @@ def preprocessing_orderbook_df(orderbook, message, sampling_seconds=10, discard_
     # Take the Time column of message and add it to orderbook
     orderbook['Time'] = message['Time']
 
-    # Check the Time column and find the index k such that (orderbook['Time'][k] - orderbook['Time'][0])=discard_time
+    # Check the Time column and find the index k such that (orderbook['Time'][k] - orderbook['Time'][0])=discard_time.
+    # Similar task is performed for the end of the dataframe
     start = orderbook['Time'].values[0]
     end = orderbook['Time'].values[-1]
     for i in range(len(orderbook)):
         if orderbook['Time'].values[i] - start >= discard_time:
+    
             k = i
             break
     for i in range(len(orderbook)):
@@ -123,6 +127,7 @@ def preprocessing_orderbook_df(orderbook, message, sampling_seconds=10, discard_
     # Iterate through the dataframe to select rows approximately sampling_seconds seconds apart
     for i in range(1, len(orderbook)):
         if orderbook['Time'].values[i] - current_time >= sampling_seconds:
+            if i < 10: logging.info(f"{orderbook['Time'].values[i] - current_time}, {sampling_seconds}")
             selected_indices.append(i)
             current_time = orderbook['Time'].values[i]
 
@@ -369,10 +374,10 @@ def create_LOB_snapshots(stock, date, N, depth, previous_days=False):
     if previous_days:
         orderbook_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in orderbook_df_paths][:N]
         message_dfs = [pd.read_parquet(f'../data/{stock}_{date}/{path}') for path in message_df_paths][:N]
-        logging.info(f'Loaded {N+1} days of data')
-        logging.info(f'Original shape of the dataframes:\n\t{orderbook_dfs[0].shape}')
+        logging.info(f'Loaded {N} days of data')
+        logging.info(f'Original shapes of the dataframes:\n\t{[df.shape for df in orderbook_dfs]}')
         # Preprocess the data using preprocessing_orderbook_df
-        orderbook_dfs, _ = zip(*[(preprocessing_orderbook_df(df, msg, sampling_seconds=2, discard_time=1800)) for df, msg in zip(orderbook_dfs, message_dfs)])
+        orderbook_dfs, _ = zip(*[(preprocessing_orderbook_df(df, msg)) for df, msg in zip(orderbook_dfs, message_dfs)])
         # Merge all the dataframes into a single one
         orderbook_df = pd.concat(orderbook_dfs, ignore_index=True)
     else:
@@ -403,7 +408,8 @@ def create_LOB_snapshots(stock, date, N, depth, previous_days=False):
     # snapshots_df['spread'] = spread
 
     # Normalize the data
-    # snapshots_df = snapshots_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))*0.1)
+    c = 50
+    snapshots_df = snapshots_df.applymap(lambda x: math.copysign(1,x)*np.sqrt(np.abs(x))/c)
 
     # Save the dataframe
     snapshots_df.to_parquet(f'../data/{stock}_{date}/miscellaneous/snapshots_df_{N}.parquet')
@@ -585,7 +591,7 @@ def simple_rounding(n):
             new_n[i] = x + (100-r)
     return new_n
 
-def transform_and_reshape(tensor, T_gen, n_features, c=10):
+def transform_and_reshape(tensor, T_gen, n_features, c=50):
     '''This function takes as input a tensor of shape (batch_size, T_real, n_features) and transforms it
     into a tensor of shape (batch_size, T_real, n_features) by applying the transformation x -> x^2 * sign(x).
     This is the inverse transformation of the normalization applied to the data.
@@ -607,7 +613,7 @@ def transform_and_reshape(tensor, T_gen, n_features, c=10):
         Transformed tensor.
     '''
     tensor_flat = tf.reshape(tensor, [-1, T_gen * n_features]).numpy()
-    # tensor_flat = np.array([[x**2 * math.copysign(1, x) for x in row] for row in tensor_flat])*c
+    tensor_flat = np.array([[x**2 * math.copysign(1, x) for x in row] for row in tensor_flat])*c
     tensor_flat = tf.reshape(tensor_flat, [-1, T_gen, n_features])
     return tensor_flat
 
@@ -791,7 +797,7 @@ def plot_samples(dataset, generator_model, features, T_gen, n_features_gen, job_
     
     return None
 
-def bar_plot_levels(stock, date, N, window_size, c=10):
+def bar_plot_levels(stock, date, N, window_size, c=50):
     condition_train = np.load(f'../data/{stock}_{date}/miscellaneous/condition_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
     input_train = np.load(f'../data/{stock}_{date}/miscellaneous/input_train_{stock}_{window_size}_{N}days_orderbook.npy', mmap_mode='r')
     levels = condition_train.shape[2]//2
@@ -1225,7 +1231,7 @@ if __name__ == "__main__":
     stock = 'MSFT'
     date = '2018-04-01_2018-04-30_5'
 
-    bar_plot_levels(stock, date, c=10)
+    bar_plot_levels(stock, date, c=50)
     exit()
     
     dataframes_paths = os.listdir(f'../data/{stock}_{date}/')
