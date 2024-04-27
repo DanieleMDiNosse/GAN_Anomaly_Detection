@@ -63,7 +63,8 @@ def dense_block(xi, units, skip_connections):
 
 def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, num_features_input, num_features_gen, activate_condition=False, loss='original'):
     '''Build the discriminator model'''
-    n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
+    # n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
+    n_nodes = [2**(4+i) for i in range(n_layers)][::-1]
 
     if activate_condition == True:
         condition = layers.Input(shape=(T_condition, num_features_input), name='condition')
@@ -105,7 +106,7 @@ def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, nu
     if activate_condition == True:
         x = layers.Concatenate()([x, x_c])
     
-    x = layers.Dense(32)(x)
+    x = layers.Dense(n_nodes[-1])(x)
 
     if loss == 'original' or loss == 'original_fm':
         output = layers.Dense(1, activation='sigmoid')(x)
@@ -122,8 +123,8 @@ def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, nu
 
 def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_features_input, num_features_gen, latent_dim, activate_condition=False):
     '''Build the generator model'''
-    n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
-    # n_nodes = [64, 48, 32]
+    # n_nodes = [2**(5+i) for i in range(n_layers)][::-1]
+    n_nodes = [2**(4+i) for i in range(n_layers)][::-1]
 
     if activate_condition == True:
         condition = layers.Input(shape=(T_condition, num_features_input), name='condition')
@@ -165,7 +166,7 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
     if activate_condition == True:
         xi = layers.Concatenate()([xi, x_c])
     
-    x = layers.Dense(32)(xi)
+    x = layers.Dense(n_nodes[-1])(xi)
 
     x = layers.Dense(T_gen*num_features_gen, activation='linear')(x)
 

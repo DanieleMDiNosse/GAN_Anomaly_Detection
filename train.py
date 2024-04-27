@@ -81,7 +81,10 @@ if __name__ == '__main__':
     depth = args.depth
 
     logging.info(f'Stock:\n\t{stock}')
-    logging.info(f'Number of days:\n\t{N}')
+    if args.previous_days: 
+        logging.info(f'Number of days:\n\t{N}')
+    else:
+        logging.info(f'Day number:\n\t{N}')
 
     # Check the available GPUs
     physical_devices = tf.config.experimental.list_physical_devices('GPU')

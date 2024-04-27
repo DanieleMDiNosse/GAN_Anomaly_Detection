@@ -127,7 +127,6 @@ def preprocessing_orderbook_df(orderbook, message, sampling_seconds=10, discard_
     # Iterate through the dataframe to select rows approximately sampling_seconds seconds apart
     for i in range(1, len(orderbook)):
         if orderbook['Time'].values[i] - current_time >= sampling_seconds:
-            if i < 10: logging.info(f"{orderbook['Time'].values[i] - current_time}, {sampling_seconds}")
             selected_indices.append(i)
             current_time = orderbook['Time'].values[i]
 
