@@ -89,12 +89,12 @@ if __name__ == '__main__':
     # Check the available GPUs
     physical_devices = tf.config.experimental.list_physical_devices('GPU')
     if len(physical_devices) == 0:
-        logging.info("No GPUs available.")
+        print("No GPUs available.")
     else:
-        logging.info("Available GPUs:")
+        print("Available GPUs:")
         tf.config.experimental.set_memory_growth(physical_devices[0], True)
         for device in physical_devices:
-            logging.info(f'\t{device}\n')
+            print(f'\t{device}\n')
     
     # Folders creation
     os.mkdir(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Model architecture plots, metrics plots
@@ -262,6 +262,7 @@ if __name__ == '__main__':
             j += 1
         if epoch % 10 == 0: logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
 
+        if epoch == 3: exit()
         # Summarize performance at each epoch
         if epoch % delta_monitor == 0 and epoch > 0:
             summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, metrics, job_id, args)

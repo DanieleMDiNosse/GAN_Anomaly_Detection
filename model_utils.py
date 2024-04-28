@@ -180,7 +180,7 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
     # plot_model(generator_model, to_file='models/generator_plot.png', show_shapes=True, show_layer_names=True)
     return generator_model
 
-# @tf.function
+@tf.function
 def train_step(real_samples, condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, loss, batch_size, clipping):
     discriminator_optimizer = optimizer[0]
     generator_optimizer = optimizer[1]
