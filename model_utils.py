@@ -107,12 +107,15 @@ def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, nu
         x = layers.Concatenate()([x, x_c])
     
     x = layers.Dense(n_nodes[-1])(x)
+    
 
     if loss == 'original' or loss == 'original_fm':
         output = layers.Dense(1, activation='sigmoid')(x)
     elif loss == 'wasserstein':
         output = layers.Dense(1)(x)
     
+    output = tf.cast(output, tf.float32)
+
     if activate_condition == True:
         discriminator = tf.keras.Model([input, condition], output, name='discriminator')
     else:
@@ -171,6 +174,7 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
     x = layers.Dense(T_gen*num_features_gen, activation='linear')(x)
 
     output = layers.Reshape((T_gen, num_features_gen))(x)
+    output = tf.cast(output, tf.float32)
 
     if activate_condition == True:
         generator_model = Model([input, condition], output, name='generator_model')

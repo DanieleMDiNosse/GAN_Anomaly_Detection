@@ -16,6 +16,7 @@ import sys
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import tensorflow as tf
+from tensorflow.keras.mixed_precision import experimental as mixed_precision
 
 
 if __name__ == '__main__':
@@ -67,6 +68,9 @@ if __name__ == '__main__':
 
     logger = tf.get_logger()
     logger.setLevel('ERROR')
+
+    policy = mixed_precision.Policy('mixed_float16')
+    mixed_precision.set_policy(policy)
 
     # Set the seed for TensorFlow to the number of the beast
     tf.random.set_seed(666)
