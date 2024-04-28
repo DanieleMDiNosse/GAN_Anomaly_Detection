@@ -16,7 +16,8 @@ import sys
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import tensorflow as tf
-from tensorflow.keras.mixed_precision import experimental as mixed_precision
+# from tensorflow.keras.mixed_precision import set_global_policy
+# set_global_policy('mixed_float16')
 
 
 if __name__ == '__main__':
@@ -69,8 +70,8 @@ if __name__ == '__main__':
     logger = tf.get_logger()
     logger.setLevel('ERROR')
 
-    policy = mixed_precision.Policy('mixed_float16')
-    mixed_precision.set_policy(policy)
+    # policy = mixed_precision.Policy('mixed_float16')
+    # mixed_precision.set_policy(policy)
 
     # Set the seed for TensorFlow to the number of the beast
     tf.random.set_seed(666)
@@ -93,14 +94,22 @@ if __name__ == '__main__':
     # Check the available GPUs
     physical_devices = tf.config.experimental.list_physical_devices('GPU')
     if len(physical_devices) == 0:
-        print("No GPUs available.")
+        logging.info("No GPUs available.")
     else:
-        print("Available GPUs:")
+        logging.info("Available GPUs:")
         tf.config.experimental.set_memory_growth(physical_devices[0], True)
         for device in physical_devices:
-            print(f'\t{device}\n')
+            logging.info(f'\t{device}\n')
     
     # Folders creation
+    # Create plots, generated samples and models folders if they do not exist
+    if not os.path.exists('plots'):
+        os.mkdir('plots')
+    if not os.path.exists('generated_samples'):
+        os.mkdir('generated_samples')
+    if not os.path.exists('models'):
+        os.mkdir('models')
+
     os.mkdir(f'plots/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Model architecture plots, metrics plots
     os.mkdir(f'generated_samples/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Generated samples
     os.mkdir(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}') # Models
@@ -243,6 +252,7 @@ if __name__ == '__main__':
     # Train the GAN.
     logging.info('\n[Training] ---------- START TRAINING ----------')
     dataset_train = tf.data.Dataset.from_tensor_slices((condition_train, input_train)).batch(batch_size)
+    dataset_train = dataset_train.map(lambda x, y: (tf.cast(x, tf.float16), tf.cast(y, tf.float16)))
     dataset_train = dataset_train.prefetch(tf.data.experimental.AUTOTUNE)
 
     num_batches = len(dataset_train)
@@ -252,7 +262,7 @@ if __name__ == '__main__':
     W1_val = []
     delta_monitor = 25
     for epoch in range(n_epochs):
-        if epoch % 10 == 0:
+        if epoch % 1 == 0:
             logging.info(f'Epoch: {epoch}/{n_epochs}')
             start = time.time()
 
@@ -264,9 +274,8 @@ if __name__ == '__main__':
             noise = noise_train[j*batch_size:(j+1)*batch_size]
             gen_samples_train, real_output, fake_output, discriminator_loss, generator_loss = train_step(batch_real_samples, batch_condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, args.loss, batch_size, j)
             j += 1
-        if epoch % 10 == 0: logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
+        if epoch % 1 == 0: logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
 
-        if epoch == 3: exit()
         # Summarize performance at each epoch
         if epoch % delta_monitor == 0 and epoch > 0:
             summarize_performance(real_output, fake_output, discriminator_loss, generator_loss, metrics, job_id, args)

@@ -1,7 +1,7 @@
 #!/bin/bash
-source ~/.bashrc
-conda activate dmdn
-cd /home/ddinosse/GAN_Anomaly_Detection
+# source ~/.bashrc
+# conda activate dmdn
+# cd /home/ddinosse/GAN_Anomaly_Detection
 
 sleep 0.5
 stock=MU
@@ -14,7 +14,7 @@ N_days=1
 T_condition=1
 T_gen=1
 loss=original_fm
-batch_size=32
+batch_size=512
 depth=2
 latent_dim=$(($depth*10))
 n_epochs=100000

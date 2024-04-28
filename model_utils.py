@@ -113,8 +113,6 @@ def build_discriminator(n_layers, type, skip_connections, T_gen, T_condition, nu
         output = layers.Dense(1, activation='sigmoid')(x)
     elif loss == 'wasserstein':
         output = layers.Dense(1)(x)
-    
-    output = tf.cast(output, tf.float32)
 
     if activate_condition == True:
         discriminator = tf.keras.Model([input, condition], output, name='discriminator')
@@ -174,7 +172,6 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
     x = layers.Dense(T_gen*num_features_gen, activation='linear')(x)
 
     output = layers.Reshape((T_gen, num_features_gen))(x)
-    output = tf.cast(output, tf.float32)
 
     if activate_condition == True:
         generator_model = Model([input, condition], output, name='generator_model')
@@ -184,7 +181,6 @@ def build_generator(n_layers, type, skip_connections, T_gen, T_condition, num_fe
     # plot_model(generator_model, to_file='models/generator_plot.png', show_shapes=True, show_layer_names=True)
     return generator_model
 
-@tf.function
 def train_step(real_samples, condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, loss, batch_size, clipping):
     discriminator_optimizer = optimizer[0]
     generator_optimizer = optimizer[1]
@@ -320,13 +316,14 @@ def build_feature_extractor(discriminator, layer_indices):
         logging.info(f'Feature Extractor: Extracted feature from layer with shape: {output.shape}')
     return tf.keras.Model(discriminator.input, outputs)
 
-# @tf.function
+@tf.function
 def compute_feature_matching_loss(real_features_list, generated_features_list):
     losses = [tf.reduce_mean(tf.square(real - generated))
               for real, generated in zip(real_features_list, generated_features_list)]
-    return tf.reduce_mean(losses)  # Average over all the feature matching losses
+    fm_loss = tf.reduce_mean(losses) # Average over all the feature matching losses
+    return fm_loss 
 
-# @tf.function
+@tf.function
 def compute_discriminator_loss(real_output, fake_output):
     binary_crossentropy = tf.keras.losses.BinaryCrossentropy(from_logits=False)
     real_loss = binary_crossentropy(tf.ones_like(real_output), real_output)
@@ -334,11 +331,12 @@ def compute_discriminator_loss(real_output, fake_output):
     total_disc_loss = real_loss + fake_loss
     return total_disc_loss
 
-# @tf.function
+@tf.function
 def compute_generator_loss(fake_output):
     binary_crossentropy = tf.keras.losses.BinaryCrossentropy(from_logits=False)
+    gen_loss = binary_crossentropy(tf.ones_like(fake_output), fake_output)
     # return -tf.reduce_mean(tf.math.log(fake_output + 1e-5))
-    return binary_crossentropy(tf.ones_like(fake_output), fake_output)
+    return gen_loss
 
 # @tf.function
 def wasserstein_loss(predictions):
