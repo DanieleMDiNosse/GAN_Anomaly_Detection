@@ -1195,6 +1195,25 @@ def anomaly_injection_orderbook(fp, T_condition, depth, ampl, anomaly_type):
                 data[chosen_window, chosen_timestamp, 1:2*depth:2] = 0
     return data, chosen_windows, chosen_feature
 
+def plot_weightwatcher(details, job_id):
+    # Collect alpha values
+    alpha_values = [details['alpha'][i] for i in range(len(details['alpha']))]
+
+    # Plot the distribution of alpha values
+    plt.figure(figsize=(10, 6))
+    plt.hist(alpha_values, bins=50, alpha=0.7, color='blue')
+    plt.title('Distribution of Alpha Values')
+    plt.xlabel('Alpha')
+    plt.ylabel('Frequency')
+
+    # Specify the path and filename to save the figure
+    path = [s for s in os.listdir('plots/') if f'{job_id}' in s][0] 
+
+    # Save the plot to the specified file
+    plt.savefig(f'plots/{path}/7_alpha_distribution.png')
+
+    return None
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

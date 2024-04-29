@@ -1,7 +1,7 @@
 #!/bin/bash
-# source ~/.bashrc
-# conda activate dmdn
-# cd /home/ddinosse/GAN_Anomaly_Detection
+source ~/.bashrc
+conda activate dmdn
+cd /home/ddinosse/GAN_Anomaly_Detection
 
 sleep 0.5
 stock=MU
@@ -10,13 +10,13 @@ type_gen=dense
 type_disc=dense
 n_layers_gen=3
 n_layers_disc=3
-N_days=1
+N_days=5
 T_condition=1
 T_gen=1
 loss=original_fm
 batch_size=512
 depth=2
-latent_dim=$(($depth*10))
+latent_dim=$(($depth*20))
 n_epochs=100000
 # skip_connectionis False if not passed, True if passed
 # clipping (data) False if not passed, True if passed

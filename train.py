@@ -16,8 +16,6 @@ import sys
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import tensorflow as tf
-# from tensorflow.keras.mixed_precision import set_global_policy
-# set_global_policy('mixed_float16')
 
 
 if __name__ == '__main__':
@@ -70,8 +68,8 @@ if __name__ == '__main__':
     logger = tf.get_logger()
     logger.setLevel('ERROR')
 
-    # policy = mixed_precision.Policy('mixed_float16')
-    # mixed_precision.set_policy(policy)
+    # For some reason If I import the weightwatcher before the logging file is created, it will not log the output
+    import weightwatcher as ww
 
     # Set the seed for TensorFlow to the number of the beast
     tf.random.set_seed(666)
@@ -249,6 +247,17 @@ if __name__ == '__main__':
     # Define a dictionary to store the metrics
     metrics = {'discriminator_loss': [], 'gen_loss': [], 'real_disc_out': [], 'fake_disc_out': []}
 
+    c = []
+    i = 0
+    for r_sample in input_train:
+        if tf.reduce_sum(tf.sign(r_sample)) != 0:
+            c.append(i)
+        i += 1
+    
+    # duplicate the instances of price changes
+    input_train = tf.concat([input_train, input_train[c]], axis=0)
+    condition_train = tf.concat([condition_train, condition_train[c]], axis=0)
+
     # Train the GAN.
     logging.info('\n[Training] ---------- START TRAINING ----------')
     dataset_train = tf.data.Dataset.from_tensor_slices((condition_train, input_train)).batch(batch_size)
@@ -262,7 +271,7 @@ if __name__ == '__main__':
     W1_val = []
     delta_monitor = 25
     for epoch in range(n_epochs):
-        if epoch % 1 == 0:
+        if epoch % 10 == 0:
             logging.info(f'Epoch: {epoch}/{n_epochs}')
             start = time.time()
 
@@ -274,7 +283,7 @@ if __name__ == '__main__':
             noise = noise_train[j*batch_size:(j+1)*batch_size]
             gen_samples_train, real_output, fake_output, discriminator_loss, generator_loss = train_step(batch_real_samples, batch_condition, generator_model, noise, discriminator_model, feature_extractor, optimizer, args.loss, batch_size, j)
             j += 1
-        if epoch % 1 == 0: logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
+        if epoch % 10 == 0: logging.info(f'Epoch {epoch} took {time.time()-start:.2f} seconds.')
 
         # Summarize performance at each epoch
         if epoch % delta_monitor == 0 and epoch > 0:
@@ -306,6 +315,22 @@ if __name__ == '__main__':
             generator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/generator_model.keras')
             discriminator_model.save(f'models/{job_id}_{args.type_gen}_{args.type_disc}_{args.n_layers_gen}_{args.n_layers_disc}_{args.T_condition}_{args.loss}/discriminator_model.keras')
             logging.info('Done')
+
+             # Initialize weightwatcher
+            watcher_gen = ww.WeightWatcher(model=generator_model)
+            watcher_disc = ww.WeightWatcher(model=discriminator_model)
+
+            # Analyze the model and get the summary DataFrame
+            results_gen = watcher_gen.analyze()
+            results_disc = watcher_disc.analyze()
+
+            # Plot the distribution of alphas
+            plot_weightwatcher(results_gen, job_id)
+            plot_weightwatcher(results_disc, job_id)
+
+            # # Print the summary
+            # logging.info(f'Weight Watcher on the trained Generator:\n\t{results_gen.describe()}')
+            # logging.info(f'Weight Watcher on the trained Discriminator:\n\t{results_disc.describe()}')
 
         if epoch > 50000:
             logging.info('Check Early Stopping Criteria...')
