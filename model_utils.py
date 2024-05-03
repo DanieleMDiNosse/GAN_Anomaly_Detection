@@ -8,6 +8,7 @@ import logging
 import psutil
 import gc
 import time
+import datetime
 import subprocess
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
@@ -19,6 +20,13 @@ import argparse
 # from tensorflow.keras.utils import plot_model
 from tensorflow.keras import layers
 from tensorflow.keras.models import Model
+from tensorboard.plugins.hparams import api as hp
+
+# Setup TensorBoard writer
+if not os.path.exists('logs/gradient_tape/'):
+    os.makedirs('logs/gradient_tape/')
+log_dir = "logs/gradient_tape/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+writer = tf.summary.create_file_writer(log_dir)
 
 def free_memory():
     tf.keras.backend.clear_session()
@@ -205,7 +213,7 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
     Step 5: Apply the gradients to the optimizer'''
 
     # Discriminator training
-    for _ in range(disc_step):
+    for step in range(disc_step):
         with tf.GradientTape() as disc_tape:
             generated_samples = generator_model([noise, condition], training=True)
             real_output = discriminator_model([real_samples, condition], training=True)
@@ -221,9 +229,18 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
 
         gradients_of_discriminator = disc_tape.gradient(discriminator_loss, discriminator_model.trainable_variables)
         if clipping == True:
-        # Clip the gradients to stabilize training
-            gradients_of_discriminator = [tf.clip_by_norm(g, clip_norm=1) if g is not None else None for g in gradients_of_discriminator]
+            # Clip the gradients by value
+            gradients_of_discriminator = [tf.clip_by_value(g, clip_value_min=-0.01, clip_value_max=0.01) if g is not None else None for g in gradients_of_discriminator]
+            # Clip the gradients to stabilize training
+            # gradients_of_discriminator = [tf.clip_by_norm(g, clip_norm=1) if g is not None else None for g in gradients_of_discriminator]
         discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator_model.trainable_variables))
+
+        # Log gradient norms to TensorBoard
+        with writer.as_default():
+            for idx, grad in enumerate(gradients_of_discriminator):
+                if grad is not None:
+                    tf.summary.scalar(f'grad_norm_disc/layer_{idx}', tf.norm(grad), step=step)
+            writer.flush()
 
     # Generator training
     with tf.GradientTape() as gen_tape:
@@ -247,6 +264,13 @@ def train_step(real_samples, condition, generator_model, noise, discriminator_mo
 
     gradients_of_generator = gen_tape.gradient(generator_loss, generator_model.trainable_variables)
     generator_optimizer.apply_gradients(zip(gradients_of_generator, generator_model.trainable_variables))
+
+    # Log gradient norms to TensorBoard
+    with writer.as_default():
+        for idx, grad in enumerate(gradients_of_generator):
+            if grad is not None:
+                tf.summary.scalar(f'grad_norm_gen/layer_{idx}', tf.norm(grad), step=step)
+        writer.flush()
 
     # Delete the tape to free resources
     del gen_tape
@@ -352,7 +376,7 @@ def wasserstein_loss(predictions):
         w_tot = -tf.reduce_mean(fake_output)
     return w_tot
 
-# @tf.function
+@tf.function
 def gradient_penalty(discriminator_model, batch_size, real_samples, fake_samples, condition):
     # Get the interpolated samples
     alpha = tf.random.normal([batch_size, 1, 1], 0.0, 1.0)
@@ -365,7 +389,7 @@ def gradient_penalty(discriminator_model, batch_size, real_samples, fake_samples
         pred = discriminator_model([interpolated, condition], training=True)
 
     grads = gp_tape.gradient(pred, [interpolated])[0]
-    norm = tf.sqrt(tf.reduce_sum(tf.square(grads), axis=[1, 2]))
+    norm = tf.sqrt(tf.reduce_sum(tf.square(grads), axis=[1, 2]) + 1e-8)
     gp = tf.reduce_mean((norm - 1.0) ** 2)
     return float(gp)
 

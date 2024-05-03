@@ -13,11 +13,11 @@ n_layers_disc=3
 N_days=5
 T_condition=1
 T_gen=1
-loss=original_fm
+loss=wasserstein
 batch_size=512
 depth=2
 latent_dim=$(($depth*20))
-n_epochs=100000
+n_epochs=10
 # skip_connectionis False if not passed, True if passed
 # clipping (data) False if not passed, True if passed
 # previous_days False if not passed, True if passed

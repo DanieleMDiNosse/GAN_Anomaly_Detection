@@ -325,8 +325,8 @@ if __name__ == '__main__':
             results_disc = watcher_disc.analyze()
 
             # Plot the distribution of alphas
-            plot_weightwatcher(results_gen, job_id)
-            plot_weightwatcher(results_disc, job_id)
+            plot_weightwatcher(results_gen, epoch, job_id)
+            plot_weightwatcher(results_disc, epoch, job_id)
 
             # # Print the summary
             # logging.info(f'Weight Watcher on the trained Generator:\n\t{results_gen.describe()}')

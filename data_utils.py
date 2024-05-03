@@ -1195,7 +1195,7 @@ def anomaly_injection_orderbook(fp, T_condition, depth, ampl, anomaly_type):
                 data[chosen_window, chosen_timestamp, 1:2*depth:2] = 0
     return data, chosen_windows, chosen_feature
 
-def plot_weightwatcher(details, job_id):
+def plot_weightwatcher(details, epoch, job_id):
     # Collect alpha values
     alpha_values = [details['alpha'][i] for i in range(len(details['alpha']))]
 
@@ -1210,7 +1210,7 @@ def plot_weightwatcher(details, job_id):
     path = [s for s in os.listdir('plots/') if f'{job_id}' in s][0] 
 
     # Save the plot to the specified file
-    plt.savefig(f'plots/{path}/7_alpha_distribution.png')
+    plt.savefig(f'plots/{path}/7_alpha_distribution_{epoch}.png')
 
     return None
 
